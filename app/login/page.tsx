@@ -27,6 +27,27 @@ export default function LoginPage() {
     setNotice(null);
   }
 
+  async function forgotPassword() {
+    if (busy) return;
+    const target = email.trim();
+    if (!target) {
+      setError("Type your email above first, then hit forgot password.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    // Come back to this exact page; AppShell routes the recovery session
+    // to /reset-password.
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(
+      target,
+      { redirectTo: window.location.href },
+    );
+    setBusy(false);
+    if (resetError) setError(resetError.message);
+    else setNotice("Reset link sent. Check your email, then set a new password.");
+  }
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
@@ -161,6 +182,17 @@ export default function LoginPage() {
               : "Create account"}
         </Button>
       </form>
+
+      {mode === "signin" && (
+        <button
+          type="button"
+          onClick={forgotPassword}
+          disabled={busy}
+          className="mx-auto mt-5 min-h-11 px-3 text-[13px] font-semibold text-dim underline underline-offset-2"
+        >
+          Forgot password?
+        </button>
+      )}
     </div>
   );
 }

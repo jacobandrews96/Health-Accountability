@@ -47,6 +47,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
+  const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [profilesRetry, setProfilesRetry] = useState(0);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -55,12 +57,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       setSession(data.session);
       setSessionLoaded(true);
     });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange((event, s) => {
       setSession(s);
       setSessionLoaded(true);
+      // Arriving from a password-reset email link: let them set a new one.
+      if (event === "PASSWORD_RECOVERY") router.replace("/reset-password");
     });
     return () => sub.subscription.unsubscribe();
-  }, []);
+  }, [router]);
 
   const refreshProfiles = useCallback(async () => {
     const { data, error } = await supabase
@@ -80,12 +84,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         .from("profiles")
         .select("*")
         .order("created_at");
-      if (!cancelled && !error && data) setProfiles(data);
+      if (cancelled) return;
+      if (error) {
+        // Recorded always, but only *rendered* when there's no member list
+        // at all — a failed background refresh shouldn't nuke a working app.
+        setProfilesError(error.message);
+        return;
+      }
+      if (data) {
+        setProfiles(data);
+        setProfilesError(null);
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, [session, pathname]);
+  }, [session, pathname, profilesRetry]);
 
   // Redirects between login and the app.
   const onLogin = pathname === "/login" || pathname === "/login/";
@@ -105,7 +119,30 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   if (onLogin) return <CenteredSpinner />; // redirecting to home
 
   const me = profiles?.find((p) => p.id === session.user.id);
-  if (!profiles || !me) return <CenteredSpinner />;
+  if (!profiles || !me) {
+    // Couldn't load who's who — dead in the water without it, so say so
+    // instead of spinning forever.
+    if (profilesError) {
+      return (
+        <div className="mx-auto flex min-h-dvh w-full max-w-sm flex-col items-center justify-center gap-4 px-5 text-center">
+          <p className="text-sm font-semibold text-danger">
+            Couldn&apos;t load the app: {profilesError}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setProfilesError(null);
+              setProfilesRetry((k) => k + 1);
+            }}
+            className="rounded-xl bg-soft px-5 py-3 text-[15px] font-semibold text-ink"
+          >
+            Retry
+          </button>
+        </div>
+      );
+    }
+    return <CenteredSpinner />;
+  }
 
   const ordered = [me, ...profiles.filter((p) => p.id !== me.id)];
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
 import { formatDay, todayNY } from "@/lib/dates";
+import { useTodayNY } from "@/lib/useTodayNY";
 import type { Checkin, DailyLog, Metric, Workout } from "@/lib/types";
 import {
   Button,
@@ -22,7 +23,9 @@ const WORKOUT_KINDS = ["Lifting", "Cardio", "Sports", "Walk", "Yoga"];
 
 export default function CheckinPage() {
   const { userId } = useApp();
-  const [day] = useState(todayNY);
+  // Reactive: rolls over at midnight NY, which refetches the whole form for
+  // the new day (the effect below depends on `day`).
+  const day = useTodayNY();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -35,6 +38,8 @@ export default function CheckinPage() {
   const [values, setValues] = useState<Record<string, string>>({});
   /** Metric ids that currently have a daily_logs row for today. */
   const [loggedIds, setLoggedIds] = useState<Set<string>>(new Set());
+  /** Metric ids whose current input isn't a number (blocks save). */
+  const [invalidIds, setInvalidIds] = useState<Set<string>>(new Set());
 
   const [mood, setMood] = useState<number | null>(null);
   const [moodNote, setMoodNote] = useState("");
@@ -143,13 +148,27 @@ export default function CheckinPage() {
 
   function setMetricValue(id: string, v: string) {
     setValues((prev) => ({ ...prev, [id]: v }));
+    setInvalidIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   }
 
   async function save() {
     if (saving) return;
-    setSaving(true);
-    setSaveError(null);
 
+    // Never write onto a stale day (tab restored after midnight before the
+    // rollover hook fires). The form refetches for the new day on its own.
+    if (todayNY() !== day) {
+      setSaveError(
+        "It's a new day. The form is reloading for today — check your numbers and save again.",
+      );
+      return;
+    }
+
+    // Validate everything before writing anything.
     const upserts: {
       user_id: string;
       metric_id: string;
@@ -157,6 +176,7 @@ export default function CheckinPage() {
       value: number;
     }[] = [];
     const clears: string[] = [];
+    const invalid = new Set<string>();
     for (const m of metrics) {
       const raw = (values[m.id] ?? "").trim();
       if (raw === "") {
@@ -164,25 +184,30 @@ export default function CheckinPage() {
         continue;
       }
       const num = Number(raw);
-      if (!Number.isFinite(num)) continue; // garbage input — skip it
+      if (!Number.isFinite(num)) {
+        invalid.add(m.id);
+        continue;
+      }
       upserts.push({ user_id: userId, metric_id: m.id, day, value: num });
     }
+    if (invalid.size > 0) {
+      setInvalidIds(invalid);
+      const names = metrics
+        .filter((m) => invalid.has(m.id))
+        .map((m) => m.name)
+        .join(", ");
+      setSaveError(`Not a number: ${names}. Plain digits only — fix it and save again.`);
+      return;
+    }
+
+    setSaving(true);
+    setSaveError(null);
 
     let errMsg: string | null = null;
 
-    const checkinRes = await supabase.from("checkins").upsert(
-      {
-        user_id: userId,
-        day,
-        mood,
-        mood_note: moodNote.trim() === "" ? null : moodNote.trim(),
-        sleep_quality: sleepQuality,
-      },
-      { onConflict: "user_id,day" },
-    );
-    if (checkinRes.error) errMsg = checkinRes.error.message;
-
-    if (!errMsg && upserts.length > 0) {
+    // Metric values first; the checkins row last, since that's what flips
+    // "Logged today ✓" for your partner — don't flip it on a partial write.
+    if (upserts.length > 0) {
       const res = await supabase
         .from("daily_logs")
         .upsert(upserts, { onConflict: "user_id,metric_id,day" });
@@ -199,12 +224,38 @@ export default function CheckinPage() {
       if (res.error) errMsg = res.error.message;
     }
 
-    setSaving(false);
+    if (!errMsg) {
+      const checkinRes = await supabase.from("checkins").upsert(
+        {
+          user_id: userId,
+          day,
+          mood,
+          mood_note: moodNote.trim() === "" ? null : moodNote.trim(),
+          sleep_quality: sleepQuality,
+        },
+        { onConflict: "user_id,day" },
+      );
+      if (checkinRes.error) errMsg = checkinRes.error.message;
+    }
+
     if (errMsg) {
+      // Part of the save may have landed. Resync which metrics actually have
+      // rows so a retry (or a later clear) works against reality — without
+      // touching what the user typed.
+      const resync = await supabase
+        .from("daily_logs")
+        .select("metric_id")
+        .eq("user_id", userId)
+        .eq("day", day);
+      if (!resync.error && resync.data) {
+        setLoggedIds(new Set(resync.data.map((r) => r.metric_id as string)));
+      }
+      setSaving(false);
       setSaveError(errMsg);
       return;
     }
 
+    setSaving(false);
     setLoggedIds((prev) => {
       const next = new Set(prev);
       for (const id of clears) next.delete(id);
@@ -253,6 +304,8 @@ export default function CheckinPage() {
   }
 
   async function deleteWorkout(id: string) {
+    const target = workouts.find((w) => w.id === id);
+    if (!confirm(`Delete ${target?.kind ?? "this workout"}? No undo.`)) return;
     const prev = workouts;
     setWorkouts((list) => list.filter((w) => w.id !== id));
     const { error } = await supabase.from("workouts").delete().eq("id", id);
@@ -303,6 +356,7 @@ export default function CheckinPage() {
                     key={m.id}
                     metric={m}
                     value={values[m.id] ?? ""}
+                    invalid={invalidIds.has(m.id)}
                     onChange={(v) => setMetricValue(m.id, v)}
                   />
                 ))}
@@ -484,32 +538,53 @@ export default function CheckinPage() {
 function MetricRow({
   metric,
   value,
+  invalid = false,
   onChange,
 }: {
   metric: Metric;
   value: string;
+  invalid?: boolean;
   onChange: (v: string) => void;
 }) {
   if (metric.type === "yesno") {
     const on = value === "1";
     return (
-      <button
-        type="button"
-        onClick={() => onChange(on ? "0" : "1")}
-        className="flex min-h-14 w-full items-center justify-between gap-3 py-2 text-left"
-      >
-        <span className="text-[15px] font-semibold text-ink">{metric.name}</span>
-        <span
-          aria-hidden
-          className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-sm font-bold transition-colors ${
-            on
-              ? "border-accent-deep bg-accent-deep text-bg"
-              : "border-soft bg-bg text-transparent"
-          }`}
+      <div className="flex min-h-14 w-full items-center gap-1 py-2">
+        <button
+          type="button"
+          onClick={() => onChange(on ? "0" : "1")}
+          className="flex min-h-11 min-w-0 flex-1 items-center justify-between gap-3 text-left"
         >
-          ✓
-        </span>
-      </button>
+          <span className="text-[15px] font-semibold text-ink">
+            {metric.name}
+            {value === "0" && (
+              <span className="ml-2 text-[12px] font-semibold text-dim">
+                (no)
+              </span>
+            )}
+          </span>
+          <span
+            aria-hidden
+            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border text-sm font-bold transition-colors ${
+              on
+                ? "border-accent-deep bg-accent-deep text-bg"
+                : "border-soft bg-bg text-transparent"
+            }`}
+          >
+            ✓
+          </span>
+        </button>
+        {value !== "" && (
+          <button
+            type="button"
+            onClick={() => onChange("")}
+            aria-label={`Clear ${metric.name}`}
+            className="min-h-11 shrink-0 px-2 text-[13px] font-semibold text-dim underline underline-offset-2"
+          >
+            clear
+          </button>
+        )}
+      </div>
     );
   }
 
@@ -535,7 +610,12 @@ function MetricRow({
           {metric.name}
           {metric.unit ? ` (${metric.unit})` : ""}
         </Label>
-        <CountStepper name={metric.name} value={value} onChange={onChange} />
+        <CountStepper
+          name={metric.name}
+          value={value}
+          invalid={invalid}
+          onChange={onChange}
+        />
       </div>
     );
   }
@@ -551,7 +631,7 @@ function MetricRow({
           inputMode="decimal"
           placeholder="—"
           aria-label={metric.name}
-          className={metric.unit ? "pr-16" : ""}
+          className={`${metric.unit ? "pr-16" : ""} ${invalid ? "border-danger" : ""}`}
         />
         {metric.unit && (
           <span className="pointer-events-none absolute inset-y-0 right-3.5 flex items-center text-[13px] font-semibold text-dim">
@@ -559,6 +639,11 @@ function MetricRow({
           </span>
         )}
       </div>
+      {invalid && (
+        <p className="mt-1 text-[12px] font-semibold text-danger">
+          Not a number. Plain digits only, e.g. 1200 or 7.5.
+        </p>
+      )}
     </div>
   );
 }
@@ -602,8 +687,11 @@ function SliderRow({
         step={1}
         value={value ?? 5}
         onChange={(e) => onChange(Number(e.target.value))}
-        onPointerDown={() => {
-          if (value === null) onChange(5);
+        // Seed on click, not pointerdown: a touch-scroll that starts on the
+        // slider fires pointerdown (then pointercancel) and must NOT record
+        // a value. A deliberate tap always ends in a click.
+        onClick={(e) => {
+          if (value === null) onChange(Number(e.currentTarget.value));
         }}
         aria-label={ariaLabel}
         className={`h-11 w-full ${value === null ? "opacity-40" : ""}`}
@@ -620,14 +708,18 @@ function SliderRow({
 function CountStepper({
   name,
   value,
+  invalid = false,
   onChange,
 }: {
   name: string;
   value: string;
+  invalid?: boolean;
   onChange: (v: string) => void;
 }) {
   function step(delta: number) {
     const parsed = value.trim() === "" ? NaN : Number(value);
+    // "−" on an unset value stays unset — it must not log an explicit 0.
+    if (!Number.isFinite(parsed) && delta < 0) return;
     const base = Number.isFinite(parsed) ? parsed : 0;
     onChange(String(Math.max(0, base + delta)));
   }
@@ -647,7 +739,7 @@ function CountStepper({
         inputMode="numeric"
         placeholder="—"
         aria-label={name}
-        className="text-center"
+        className={`text-center ${invalid ? "border-danger" : ""}`}
       />
       <button
         type="button"

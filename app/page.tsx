@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
-import { addDays, formatDay, todayNY } from "@/lib/dates";
+import { addDays, formatDay } from "@/lib/dates";
+import { useTodayNY } from "@/lib/useTodayNY";
 import type { Checkin, DailyLog, Profile, Workout } from "@/lib/types";
 import {
   Button,
@@ -16,7 +17,7 @@ import {
 } from "@/components/ui";
 
 interface HomeData {
-  /** Checkins for all members, last 35 days. */
+  /** Checkins for all members, full history (tiny table — powers streaks). */
   checkins: Checkin[];
   /** Today's daily_logs for all members. */
   todayLogs: DailyLog[];
@@ -41,7 +42,9 @@ function streakFrom(days: Set<string>, today: string): number {
 
 export default function HomePage() {
   const { me, profiles } = useApp();
-  const [day] = useState(todayNY);
+  // Reactive: rolls past midnight NY and refetches, so the page never shows
+  // yesterday as "today" or falsely accuses anyone of not logging.
+  const day = useTodayNY();
 
   const [data, setData] = useState<HomeData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +55,9 @@ export default function HomePage() {
 
     async function load() {
       const [checkinsRes, logsRes, workoutsRes] = await Promise.all([
-        supabase.from("checkins").select("*").gte("day", addDays(day, -34)),
+        // No date window: streaks walk arbitrarily far back, and two
+        // people logging daily is a few KB per year.
+        supabase.from("checkins").select("*"),
         supabase.from("daily_logs").select("*").eq("day", day),
         supabase.from("workouts").select("*").eq("day", day).order("created_at"),
       ]);
@@ -81,7 +86,9 @@ export default function HomePage() {
 
   async function handleSignOut() {
     setSigningOut(true);
-    const { error: signOutError } = await supabase.auth.signOut();
+    // Local scope: signing out on your phone must not kill your partner's
+    // (or your other device's) session.
+    const { error: signOutError } = await supabase.auth.signOut({ scope: "local" });
     // AppShell redirects to /login when the session goes away.
     if (signOutError) {
       setError(signOutError.message);

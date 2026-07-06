@@ -31,9 +31,11 @@ const TYPE_OPTIONS: { value: MetricType; label: string }[] = [
   { value: "scale", label: "Scale 1–10" },
 ];
 
+// "Weekly" is deliberately not offered yet: nothing can log a weekly-cadence
+// metric until the weekly-goals dashboard ships, so offering it here would
+// create metrics whose data silently goes nowhere. Re-add with Phase 2.
 const CADENCE_OPTIONS: { value: MetricCadence; label: string }[] = [
   { value: "daily", label: "Daily" },
-  { value: "weekly", label: "Weekly" },
 ];
 
 const DIRECTION_OPTIONS: { value: MetricDirection; label: string }[] = [

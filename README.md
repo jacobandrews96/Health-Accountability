@@ -33,12 +33,16 @@ recap (Phase 4).
 2. **Smooth signups (recommended)** — Supabase dashboard → **Authentication →
    Sign In / Providers → Email** → turn **off** "Confirm email". Otherwise you
    each have to click a confirmation link before the first sign-in.
-3. **Hosting** — GitHub repo → **Settings → Pages → Build and deployment →
+3. **Password-reset links** — Supabase dashboard → **Authentication → URL
+   Configuration** → set **Site URL** to
+   `https://jacobandrews96.github.io/Health-Accountability/`. Without this,
+   "Forgot password?" emails link to the wrong place.
+4. **Hosting** — GitHub repo → **Settings → Pages → Build and deployment →
    Source: "GitHub Actions"**. Every push then auto-deploys; the workflow can
    also be run manually from the Actions tab.
-4. Open the live URL on your phone, **Create account**, and have your friend
+5. Open the live URL on your phone, **Create account**, and have your friend
    do the same. Add it to your home screen for an app-like feel.
-5. **Lock the door** — once you've both registered: Supabase dashboard →
+6. **Lock the door** — once you've both registered: Supabase dashboard →
    **Authentication → Sign In / Providers** → turn **off** "Allow new users
    to sign up". (Flip it back on if a third person ever joins.)
 
