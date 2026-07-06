@@ -5,7 +5,13 @@ import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
 import { formatDay, todayNY } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
-import type { Checkin, DailyLog, Metric, Workout } from "@/lib/types";
+import type {
+  Checkin,
+  DailyLog,
+  Metric,
+  Workout,
+  WorkoutExercise,
+} from "@/lib/types";
 import {
   Button,
   Card,
@@ -50,6 +56,11 @@ export default function CheckinPage() {
   const [wKind, setWKind] = useState("");
   const [wDuration, setWDuration] = useState("");
   const [wNote, setWNote] = useState("");
+  /** Optional detailed mode: exercises with sets/reps/weight (strings while editing). */
+  const [wDetails, setWDetails] = useState<
+    { name: string; sets: { reps: string; weight: string }[] }[]
+  >([]);
+  const [showDetails, setShowDetails] = useState(false);
   const [addingWorkout, setAddingWorkout] = useState(false);
   const [workoutError, setWorkoutError] = useState<string | null>(null);
 
@@ -277,6 +288,24 @@ export default function CheckinPage() {
       return;
     }
 
+    // Detailed mode: keep exercises with a name; keep sets with any value.
+    const exercises: WorkoutExercise[] = wDetails
+      .filter((ex) => ex.name.trim() !== "")
+      .map((ex) => ({
+        name: ex.name.trim(),
+        sets: ex.sets
+          .filter((s) => s.reps.trim() !== "" || s.weight.trim() !== "")
+          .map((s) => ({
+            reps: s.reps.trim() === "" ? null : Number(s.reps),
+            weight: s.weight.trim() === "" ? null : Number(s.weight),
+          }))
+          .filter(
+            (s) =>
+              (s.reps === null || Number.isFinite(s.reps)) &&
+              (s.weight === null || Number.isFinite(s.weight)),
+          ),
+      }));
+
     setAddingWorkout(true);
     setWorkoutError(null);
     const { data, error } = await supabase
@@ -287,6 +316,7 @@ export default function CheckinPage() {
         kind,
         duration_min: durationNum === null ? null : Math.round(durationNum),
         note: wNote.trim() === "" ? null : wNote.trim(),
+        details: exercises.length > 0 ? { exercises } : null,
       })
       .select()
       .single();
@@ -300,6 +330,8 @@ export default function CheckinPage() {
     setWKind("");
     setWDuration("");
     setWNote("");
+    setWDetails([]);
+    setShowDetails(false);
     setShowWorkoutForm(false);
   }
 
@@ -484,6 +516,125 @@ export default function CheckinPage() {
                   aria-label="Workout note"
                 />
               </div>
+
+              {!showDetails ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowDetails(true);
+                    if (wDetails.length === 0) {
+                      setWDetails([
+                        { name: "", sets: [{ reps: "", weight: "" }] },
+                      ]);
+                    }
+                  }}
+                  className="mt-3 min-h-11 text-[13px] font-semibold text-dim underline underline-offset-2"
+                >
+                  + Add details (exercises, sets, weight) — optional
+                </button>
+              ) : (
+                <div className="mt-4 border-t border-soft pt-3">
+                  <Label>Details</Label>
+                  {wDetails.map((ex, i) => (
+                    <div key={i} className="mb-3 rounded-xl bg-bg p-3">
+                      <Input
+                        value={ex.name}
+                        onChange={(e) =>
+                          setWDetails((prev) =>
+                            prev.map((x, xi) =>
+                              xi === i ? { ...x, name: e.target.value } : x,
+                            ),
+                          )
+                        }
+                        placeholder="Exercise, e.g. Bench press"
+                        aria-label={`Exercise ${i + 1} name`}
+                      />
+                      {ex.sets.map((s, j) => (
+                        <div key={j} className="mt-2 flex items-center gap-2">
+                          <span className="w-10 shrink-0 text-[12px] text-dim">
+                            Set {j + 1}
+                          </span>
+                          <Input
+                            value={s.reps}
+                            onChange={(e) =>
+                              setWDetails((prev) =>
+                                prev.map((x, xi) =>
+                                  xi === i
+                                    ? {
+                                        ...x,
+                                        sets: x.sets.map((y, yj) =>
+                                          yj === j
+                                            ? { ...y, reps: e.target.value }
+                                            : y,
+                                        ),
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }
+                            inputMode="numeric"
+                            placeholder="reps"
+                            aria-label={`Exercise ${i + 1} set ${j + 1} reps`}
+                          />
+                          <Input
+                            value={s.weight}
+                            onChange={(e) =>
+                              setWDetails((prev) =>
+                                prev.map((x, xi) =>
+                                  xi === i
+                                    ? {
+                                        ...x,
+                                        sets: x.sets.map((y, yj) =>
+                                          yj === j
+                                            ? { ...y, weight: e.target.value }
+                                            : y,
+                                        ),
+                                      }
+                                    : x,
+                                ),
+                              )
+                            }
+                            inputMode="decimal"
+                            placeholder="lbs"
+                            aria-label={`Exercise ${i + 1} set ${j + 1} weight`}
+                          />
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setWDetails((prev) =>
+                            prev.map((x, xi) =>
+                              xi === i
+                                ? {
+                                    ...x,
+                                    sets: [...x.sets, { reps: "", weight: "" }],
+                                  }
+                                : x,
+                            ),
+                          )
+                        }
+                        className="mt-2 min-h-10 text-[13px] font-semibold text-dim underline underline-offset-2"
+                      >
+                        + set
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setWDetails((prev) => [
+                        ...prev,
+                        { name: "", sets: [{ reps: "", weight: "" }] },
+                      ])
+                    }
+                    className="min-h-10 text-[13px] font-semibold text-dim underline underline-offset-2"
+                  >
+                    + exercise
+                  </button>
+                </div>
+              )}
+
               <div className="mt-4 flex gap-2">
                 <Button
                   onClick={addWorkout}

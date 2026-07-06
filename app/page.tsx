@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
+import Feed from "@/components/Feed";
 import { addDays, formatDay, weekStart } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
 import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
@@ -156,6 +157,8 @@ export default function HomePage() {
           )}
         </div>
       )}
+
+      {data && <Feed />}
 
       <footer className="mt-10 flex items-center justify-between">
         <span className="text-xs text-dim">

@@ -41,8 +41,18 @@ const NAV = [
   { href: "/", label: "Home", icon: "🏠" },
   { href: "/checkin", label: "Check-in", icon: "✅" },
   { href: "/goals", label: "Goals", icon: "🎯" },
-  { href: "/baseline", label: "Baseline", icon: "📍" },
-  { href: "/metrics", label: "Metrics", icon: "📏" },
+  { href: "/accountability", label: "Confess", icon: "🚨" },
+  { href: "/more", label: "More", icon: "⋯" },
+];
+
+/** Routes that live under the "More" tab. */
+const MORE_ROUTES = [
+  "/more",
+  "/baseline",
+  "/metrics",
+  "/workouts",
+  "/trends",
+  "/recap",
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -168,7 +178,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
               const active =
                 item.href === "/"
                   ? pathname === "/" || pathname === ""
-                  : pathname.startsWith(item.href);
+                  : item.href === "/more"
+                    ? MORE_ROUTES.some((r) => pathname.startsWith(r))
+                    : pathname.startsWith(item.href);
               return (
                 <Link
                   key={item.href}

@@ -73,12 +73,17 @@ export function formatWeek(monday: string): string {
 
 /** The day string (NY timezone) for an ISO timestamp, e.g. created_at values. */
 export function timestampToDayNY(iso: string): string {
-  return dayFormatter.format(new Date(iso));
+  const d = new Date(iso);
+  // A malformed timestamp must never crash a whole page render.
+  if (Number.isNaN(d.getTime())) return "";
+  return dayFormatter.format(d);
 }
 
 /** "3:41 PM" NY-local time label for an ISO timestamp. */
 export function formatTimeNY(iso: string): string {
-  return new Date(iso).toLocaleTimeString("en-US", {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString("en-US", {
     timeZone: TZ,
     hour: "numeric",
     minute: "2-digit",

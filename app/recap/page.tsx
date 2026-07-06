@@ -7,7 +7,8 @@ import { useApp } from "@/components/AppShell";
 import { addDays, formatWeek, weekStart } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
 import { computeProgress, formatValue, STATUS_LABEL } from "@/lib/goals";
-import type { DailyLog, Metric, Profile, WeeklyGoal } from "@/lib/types";
+import { timestampToDayNY } from "@/lib/dates";
+import type { DailyLog, Metric, Profile, Vice, ViceEvent, WeeklyGoal } from "@/lib/types";
 import { Card, ErrorBanner, PageHeader, Spinner } from "@/components/ui";
 
 interface WeekData {
@@ -16,6 +17,8 @@ interface WeekData {
   goals: WeeklyGoal[];
   logs: DailyLog[];
   metrics: Metric[];
+  vices: Vice[];
+  viceEvents: ViceEvent[];
 }
 
 export default function RecapPage() {
@@ -40,19 +43,30 @@ export default function RecapPage() {
 
     async function load() {
       const weekEnd = addDays(week, 6);
-      const [goalsRes, logsRes, metricsRes] = await Promise.all([
-        supabase.from("weekly_goals").select("*").eq("week_start", week),
-        supabase
-          .from("daily_logs")
-          .select("*")
-          .gte("day", week)
-          .lte("day", weekEnd),
-        supabase.from("metrics").select("*"),
-      ]);
+      const [goalsRes, logsRes, metricsRes, vicesRes, eventsRes] =
+        await Promise.all([
+          supabase.from("weekly_goals").select("*").eq("week_start", week),
+          supabase
+            .from("daily_logs")
+            .select("*")
+            .gte("day", week)
+            .lte("day", weekEnd),
+          supabase.from("metrics").select("*"),
+          supabase.from("vices").select("*"),
+          supabase
+            .from("vice_events")
+            .select("*")
+            .gte("occurred_at", `${week}T00:00:00Z`),
+        ]);
 
       if (cancelled) return;
 
-      const firstError = goalsRes.error ?? logsRes.error ?? metricsRes.error;
+      const firstError =
+        goalsRes.error ??
+        logsRes.error ??
+        metricsRes.error ??
+        vicesRes.error ??
+        eventsRes.error;
       if (firstError) {
         setError({ week, message: firstError.message });
         return;
@@ -62,6 +76,11 @@ export default function RecapPage() {
         goals: (goalsRes.data ?? []) as WeeklyGoal[],
         logs: (logsRes.data ?? []) as DailyLog[],
         metrics: (metricsRes.data ?? []) as Metric[],
+        vices: (vicesRes.data ?? []) as Vice[],
+        viceEvents: ((eventsRes.data ?? []) as ViceEvent[]).filter((e) => {
+          const d = timestampToDayNY(e.occurred_at);
+          return d >= week && d <= weekEnd;
+        }),
       });
     }
 
@@ -128,6 +147,33 @@ export default function RecapPage() {
   );
 }
 
+function SlipsLine({
+  profile,
+  data,
+}: {
+  profile: Profile;
+  data: WeekData;
+}) {
+  const viceById = new Map(data.vices.map((v) => [v.id, v]));
+  const counts = new Map<string, number>();
+  for (const e of data.viceEvents) {
+    if (e.user_id !== profile.id) continue;
+    const name = viceById.get(e.vice_id)?.name ?? "vice";
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const parts = [...counts.entries()].map(([name, n]) => `${name} ×${n}`);
+  return (
+    <p className="mt-1.5 text-[13px]">
+      <span className="text-dim">Slips: </span>
+      {parts.length === 0 ? (
+        <span className="font-semibold text-accent">none — clean week</span>
+      ) : (
+        <span className="font-semibold text-danger">{parts.join(" · ")}</span>
+      )}
+    </p>
+  );
+}
+
 function MemberRecap({
   profile,
   data,
@@ -162,6 +208,8 @@ function MemberRecap({
           </span>
         )}
       </div>
+
+      <SlipsLine profile={profile} data={data} />
 
       {progress.length === 0 ? (
         <p className="mt-2 text-sm text-dim">
