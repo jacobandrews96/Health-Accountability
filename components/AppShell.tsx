@@ -70,10 +70,22 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     if (!error && data) setProfiles(data);
   }, []);
 
+  // Refetched on every route change so a member who joins after you
+  // signed in still shows up without a hard reload (it's a tiny table).
   useEffect(() => {
-    if (session) refreshProfiles();
-    else setProfiles(null);
-  }, [session, refreshProfiles]);
+    if (!session) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .order("created_at");
+      if (!cancelled && !error && data) setProfiles(data);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, pathname]);
 
   // Redirects between login and the app.
   const onLogin = pathname === "/login" || pathname === "/login/";
