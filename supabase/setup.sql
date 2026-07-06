@@ -1,69 +1,224 @@
+-- ============================================================
 -- Health Accountability — one-time database setup.
--- Paste this whole file into the Supabase SQL Editor and click "Run".
+-- Paste this whole file into the Supabase SQL Editor and Run.
+-- Safe to re-run: it never drops tables that hold app data.
+-- ============================================================
 
--- People using the app (you and your friend).
-create table if not exists members (
-  id uuid primary key default gen_random_uuid(),
-  name text not null unique,
-  emoji text not null default '💪',
+-- ---- Remove tables from the old prototype app (if present) ----
+drop table if exists notes cascade;
+drop table if exists habits cascade;
+drop table if exists members cascade;
+-- The prototype also had a "checkins" table (with a member_id column);
+-- the real app has its own. Drop only the prototype version.
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'checkins'
+               and column_name = 'member_id') then
+    drop table public.checkins cascade;
+  end if;
+end $$;
+
+-- ============================================================
+-- Tables
+-- ============================================================
+
+-- One row per user, auto-created at signup by the trigger below.
+create table if not exists profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null,
   created_at timestamptz not null default now()
 );
 
--- The shared list of daily habits everyone checks off.
-create table if not exists habits (
+-- User-defined metrics. Nothing hardcoded in the app.
+create table if not exists metrics (
   id uuid primary key default gen_random_uuid(),
-  label text not null,
-  icon text not null default '✅',
+  user_id uuid not null references profiles(id) on delete cascade,
+  name text not null,
+  type text not null check (type in ('number','yesno','duration','count','scale')),
+  unit text,
+  cadence text not null default 'daily' check (cadence in ('daily','weekly')),
+  -- higher: higher is better; lower: lower is better; cap: target is a ceiling
+  direction text not null default 'higher' check (direction in ('higher','lower','cap')),
+  -- how a week of daily values rolls up against the weekly goal
+  agg text not null default 'sum' check (agg in ('sum','avg','count_days','last')),
   sort int not null default 0,
-  active boolean not null default true
+  archived boolean not null default false,
+  created_at timestamptz not null default now()
 );
 
--- One row per person, per habit, per day it was completed.
+-- One value per user + metric + day.
+create table if not exists daily_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  metric_id uuid not null references metrics(id) on delete cascade,
+  day date not null,
+  value numeric not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, metric_id, day)
+);
+
+-- One target per user + metric + Monday-start week.
+create table if not exists weekly_goals (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  metric_id uuid not null references metrics(id) on delete cascade,
+  week_start date not null,
+  target numeric not null,
+  created_at timestamptz not null default now(),
+  unique (user_id, metric_id, week_start)
+);
+
+-- One per user per day: mood + sleep quality (sleep hours logs as a metric).
 create table if not exists checkins (
   id uuid primary key default gen_random_uuid(),
-  member_id uuid not null references members(id) on delete cascade,
-  habit_id uuid not null references habits(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
   day date not null,
+  mood int check (mood between 1 and 10),
+  mood_note text,
+  sleep_quality int check (sleep_quality between 1 and 10),
   created_at timestamptz not null default now(),
-  unique (member_id, habit_id, day)
+  unique (user_id, day)
 );
 
--- Optional daily note per person ("How did today go?").
-create table if not exists notes (
+-- Quick log always; `details` holds optional exercises/sets/reps/weight.
+create table if not exists workouts (
   id uuid primary key default gen_random_uuid(),
-  member_id uuid not null references members(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
   day date not null,
-  body text not null default '',
-  created_at timestamptz not null default now(),
-  unique (member_id, day)
+  kind text not null,
+  duration_min int,
+  note text,
+  details jsonb,
+  created_at timestamptz not null default now()
 );
 
--- Row Level Security: the app uses the public "publishable" key, so anyone
--- with the app's URL can read and write. That's the intended model for this
--- small private-between-friends app — just don't post the URL publicly.
-alter table members enable row level security;
-alter table habits enable row level security;
-alter table checkins enable row level security;
-alter table notes enable row level security;
+-- Append-only baseline snapshots; the newest row is the current baseline.
+create table if not exists baselines (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  weight numeric,
+  fixing text not null default '',
+  falling_short text not null default '',
+  created_at timestamptz not null default now()
+);
 
-drop policy if exists "open access" on members;
-drop policy if exists "open access" on habits;
-drop policy if exists "open access" on checkins;
-drop policy if exists "open access" on notes;
+-- User-defined vices.
+create table if not exists vices (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  name text not null,
+  archived boolean not null default false,
+  created_at timestamptz not null default now()
+);
 
-create policy "open access" on members for all using (true) with check (true);
-create policy "open access" on habits for all using (true) with check (true);
-create policy "open access" on checkins for all using (true) with check (true);
-create policy "open access" on notes for all using (true) with check (true);
+-- A slip: which vice, when, optional note.
+create table if not exists vice_events (
+  id uuid primary key default gen_random_uuid(),
+  vice_id uuid not null references vices(id) on delete cascade,
+  user_id uuid not null references profiles(id) on delete cascade,
+  occurred_at timestamptz not null default now(),
+  note text,
+  created_at timestamptz not null default now()
+);
 
--- Starter habits (edit these in the Table Editor any time — the app
--- picks up changes automatically).
-insert into habits (label, icon, sort)
-select * from (values
-  ('Workout', '🏋️', 1),
-  ('Eat healthy', '🥗', 2),
-  ('Sleep 7+ hours', '😴', 3),
-  ('Drink enough water', '💧', 4),
-  ('Get outside / steps', '👟', 5)
-) as seed(label, icon, sort)
-where not exists (select 1 from habits);
+-- Confessions and resisted urges.
+create table if not exists entries (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  kind text not null check (kind in ('confession','urge')),
+  body text not null,
+  created_at timestamptz not null default now()
+);
+
+-- Emoji and/or short comment on a feed item.
+create table if not exists reactions (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references profiles(id) on delete cascade,
+  target_type text not null check (target_type in ('entry','vice_event','workout','checkin')),
+  target_id uuid not null,
+  emoji text,
+  body text,
+  created_at timestamptz not null default now(),
+  check (emoji is not null or body is not null)
+);
+
+-- ============================================================
+-- Row Level Security: any signed-in member reads everything,
+-- but can only write their own rows. Anonymous gets nothing.
+-- ============================================================
+
+do $$
+declare t text;
+begin
+  foreach t in array array['profiles','metrics','daily_logs','weekly_goals',
+                           'checkins','workouts','baselines','vices',
+                           'vice_events','entries','reactions']
+  loop
+    execute format('alter table %I enable row level security', t);
+    execute format('drop policy if exists "read all" on %I', t);
+    execute format(
+      'create policy "read all" on %I for select to authenticated using (true)', t);
+  end loop;
+
+  -- Write policies for user-owned tables (profiles handled separately).
+  foreach t in array array['metrics','daily_logs','weekly_goals','checkins',
+                           'workouts','baselines','vices','vice_events',
+                           'entries','reactions']
+  loop
+    execute format('drop policy if exists "insert own" on %I', t);
+    execute format('drop policy if exists "update own" on %I', t);
+    execute format('drop policy if exists "delete own" on %I', t);
+    execute format(
+      'create policy "insert own" on %I for insert to authenticated with check (user_id = auth.uid())', t);
+    execute format(
+      'create policy "update own" on %I for update to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid())', t);
+    execute format(
+      'create policy "delete own" on %I for delete to authenticated using (user_id = auth.uid())', t);
+  end loop;
+end $$;
+
+drop policy if exists "update own profile" on profiles;
+create policy "update own profile" on profiles
+  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+
+-- ============================================================
+-- Signup trigger: create the profile and seed starter metrics
+-- and vices for every new user. All seeds are ordinary rows —
+-- rename, edit, or delete them freely in the app.
+-- ============================================================
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, display_name)
+  values (
+    new.id,
+    coalesce(nullif(new.raw_user_meta_data->>'display_name', ''),
+             split_part(new.email, '@', 1))
+  );
+
+  insert into public.metrics (user_id, name, type, unit, cadence, direction, agg, sort) values
+    (new.id, 'Weight',           'number',   'lbs',   'daily', 'lower',  'last', 1),
+    (new.id, 'Calories',         'number',   'kcal',  'daily', 'cap',    'avg',  2),
+    (new.id, 'Steps',            'count',    'steps', 'daily', 'higher', 'avg',  3),
+    (new.id, 'Gym session',      'yesno',    null,    'daily', 'higher', 'sum',  4),
+    (new.id, 'Meals ordered in', 'count',    'meals', 'daily', 'cap',    'sum',  5),
+    (new.id, 'Sleep',            'duration', 'hours', 'daily', 'higher', 'avg',  6);
+
+  insert into public.vices (user_id, name) values
+    (new.id, 'Drinking'),
+    (new.id, 'Weed'),
+    (new.id, 'Pigging out');
+
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();

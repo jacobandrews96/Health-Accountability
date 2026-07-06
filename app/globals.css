@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0b1220;
+  --color-card: #151e2e;
+  --color-soft: #22304a;
+  --color-ink: #eef2f7;
+  --color-dim: #8ca0b3;
+  --color-accent: #34d399;
+  --color-accent-deep: #10b981;
+  --color-danger: #f87171;
+  --color-warn: #fbbf24;
+}
+
+html {
+  background: var(--color-bg);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Range sliders (mood / scale inputs) */
+input[type="range"] {
+  accent-color: var(--color-accent-deep);
+}
