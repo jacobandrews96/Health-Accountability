@@ -11,6 +11,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
 import type { Profile } from "@/lib/types";
 import { Spinner } from "@/components/ui";
 
@@ -39,6 +40,7 @@ export function useApp(): AppContextValue {
 const NAV = [
   { href: "/", label: "Home", icon: "🏠" },
   { href: "/checkin", label: "Check-in", icon: "✅" },
+  { href: "/goals", label: "Goals", icon: "🎯" },
   { href: "/baseline", label: "Baseline", icon: "📍" },
   { href: "/metrics", label: "Metrics", icon: "📏" },
 ];
@@ -49,6 +51,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const [profiles, setProfiles] = useState<Profile[] | null>(null);
   const [profilesError, setProfilesError] = useState<string | null>(null);
   const [profilesRetry, setProfilesRetry] = useState(0);
+  const refreshTick = useVisibilityRefresh();
   const pathname = usePathname();
   const router = useRouter();
 
@@ -99,7 +102,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [session, pathname, profilesRetry]);
+  }, [session, pathname, profilesRetry, refreshTick]);
 
   // Redirects between login and the app.
   const onLogin = pathname === "/login" || pathname === "/login/";
