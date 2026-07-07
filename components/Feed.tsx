@@ -11,21 +11,37 @@ import {
   todayNY,
 } from "@/lib/dates";
 import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
-import type { Entry, Reaction, Vice, ViceEvent } from "@/lib/types";
+import Link from "next/link";
+import type {
+  Checkin,
+  DailyLog,
+  Entry,
+  Reaction,
+  Vice,
+  ViceEvent,
+  Workout,
+} from "@/lib/types";
 import { Card, EmptyState, ErrorBanner, Input, SectionTitle, Spinner } from "@/components/ui";
 
 const FEED_DAYS = 14;
+/* Check-ins only surface for a few days — celebrate showing up without
+ * wallpapering the feed and burying confessions and urges. */
+const CHECKIN_FEED_DAYS = 3;
 const QUICK_EMOJI = ["👊", "🔥", "😂", "💀"];
 
 interface FeedItem {
   key: string; // `${targetType}:${id}`
-  targetType: "entry" | "vice_event";
+  targetType: "entry" | "vice_event" | "checkin";
   id: string;
   userId: string;
   ts: string;
-  kind: "confession" | "urge" | "slip";
+  kind: "confession" | "urge" | "slip" | "checkin";
   body: string | null;
   viceName?: string;
+  /** Summary line for check-in items ("Mood 8/10 · 5 metrics · Lifting"). */
+  summary?: string;
+  /** The day a check-in item belongs to (links to the member day view). */
+  day?: string;
 }
 
 export default function Feed() {
@@ -45,22 +61,43 @@ export default function Feed() {
     let cancelled = false;
 
     async function load() {
-      const since = `${addDays(todayNY(), -FEED_DAYS)}T00:00:00Z`;
-      const [entriesRes, eventsRes, vicesRes, reactionsRes] = await Promise.all([
-        supabase.from("entries").select("*").gte("created_at", since),
-        supabase.from("vice_events").select("*").gte("occurred_at", since),
-        supabase.from("vices").select("*"),
-        supabase.from("reactions").select("*").gte("created_at", since),
-      ]);
+      const sinceDay = addDays(todayNY(), -FEED_DAYS);
+      const since = `${sinceDay}T00:00:00Z`;
+      const [entriesRes, eventsRes, vicesRes, reactionsRes, checkinsRes, logsRes, workoutsRes] =
+        await Promise.all([
+          supabase.from("entries").select("*").gte("created_at", since),
+          supabase.from("vice_events").select("*").gte("occurred_at", since),
+          supabase.from("vices").select("*"),
+          supabase.from("reactions").select("*").gte("created_at", since),
+          supabase
+            .from("checkins")
+            .select("*")
+            .gte("day", addDays(todayNY(), -(CHECKIN_FEED_DAYS - 1))),
+          supabase.from("daily_logs").select("id,user_id,day").gte("day", sinceDay),
+          supabase.from("workouts").select("*").gte("day", sinceDay),
+        ]);
 
       if (cancelled) return;
 
       const firstError =
-        entriesRes.error ?? eventsRes.error ?? vicesRes.error ?? reactionsRes.error;
+        entriesRes.error ??
+        eventsRes.error ??
+        vicesRes.error ??
+        reactionsRes.error ??
+        checkinsRes.error ??
+        logsRes.error ??
+        workoutsRes.error;
       if (firstError) {
         setError(firstError.message);
         return;
       }
+
+      const logsByUserDay = new Map<string, number>();
+      for (const l of (logsRes.data ?? []) as Pick<DailyLog, "user_id" | "day">[]) {
+        const k = `${l.user_id}:${l.day}`;
+        logsByUserDay.set(k, (logsByUserDay.get(k) ?? 0) + 1);
+      }
+      const workoutRows = (workoutsRes.data ?? []) as Workout[];
 
       const viceById = new Map(
         ((vicesRes.data ?? []) as Vice[]).map((v) => [v.id, v]),
@@ -89,6 +126,32 @@ export default function Feed() {
             viceName: viceById.get(e.vice_id)?.name ?? "vice",
           }),
         ),
+        // Check-ins belong on the feed too — showing up is the whole habit,
+        // and it deserves the same spotlight (and reactions) as a confession.
+        ...((checkinsRes.data ?? []) as Checkin[]).map((c): FeedItem => {
+          const parts: string[] = [];
+          if (c.mood !== null) parts.push(`Mood ${c.mood}/10`);
+          const n = logsByUserDay.get(`${c.user_id}:${c.day}`) ?? 0;
+          if (n > 0) parts.push(`${n} metric${n === 1 ? "" : "s"}`);
+          for (const w of workoutRows) {
+            if (w.user_id === c.user_id && w.day === c.day) {
+              parts.push(
+                w.duration_min != null ? `${w.kind} (${w.duration_min} min)` : w.kind,
+              );
+            }
+          }
+          return {
+            key: `checkin:${c.id}`,
+            targetType: "checkin",
+            id: c.id,
+            userId: c.user_id,
+            ts: c.created_at,
+            kind: "checkin",
+            body: c.mood_note,
+            summary: parts.join(" · "),
+            day: c.day,
+          };
+        }),
       ].sort((a, b) => (a.ts < b.ts ? 1 : -1));
 
       setItems(feed.slice(0, 30));
@@ -219,12 +282,25 @@ export default function Feed() {
                         slipped: {item.viceName}
                       </span>
                     )}
+                    {item.kind === "checkin" && (
+                      <span className="font-semibold text-accent">
+                        checked in ✓
+                      </span>
+                    )}
                   </p>
                   <span className="shrink-0 text-[12px] text-dim">
                     {timeLabel(item.ts)}
                   </span>
                 </div>
 
+                {item.kind === "checkin" && item.summary && (
+                  <Link
+                    href={`/member?id=${item.userId}&day=${item.day}`}
+                    className="mt-1 block text-[13px] text-dim underline-offset-2 active:opacity-60"
+                  >
+                    {item.summary} <span className="underline">see the day ›</span>
+                  </Link>
+                )}
                 {item.body && (
                   <p className="mt-1 text-[14px] text-ink">{item.body}</p>
                 )}
@@ -292,7 +368,7 @@ export default function Feed() {
                       type="button"
                       onClick={() => addComment(item)}
                       disabled={busy || commentText.trim() === ""}
-                      className="shrink-0 rounded-xl bg-accent-deep px-4 text-[14px] font-bold text-[#052e1f] disabled:opacity-50"
+                      className="shrink-0 rounded-xl bg-accent-deep px-4 text-[14px] font-bold text-white disabled:opacity-50"
                     >
                       Post
                     </button>

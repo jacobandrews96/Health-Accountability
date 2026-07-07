@@ -33,7 +33,9 @@ export function Card({
   className?: string;
 }) {
   return (
-    <div className={`rounded-2xl bg-card p-4 ${className}`}>{children}</div>
+    <div className={`rounded-2xl bg-card p-4 shadow-card ${className}`}>
+      {children}
+    </div>
   );
 }
 
@@ -47,9 +49,9 @@ export function Button({
 }) {
   const styles = {
     primary:
-      "bg-accent-deep text-[#052e1f] font-bold active:bg-accent disabled:opacity-50",
+      "bg-accent-deep text-white font-bold active:bg-accent disabled:opacity-50",
     secondary: "bg-soft text-ink font-semibold active:bg-soft/70",
-    danger: "bg-danger/15 text-danger font-semibold active:bg-danger/25",
+    danger: "bg-danger/10 text-danger font-semibold active:bg-danger/20",
     ghost: "text-dim underline underline-offset-2",
   }[variant];
   return (

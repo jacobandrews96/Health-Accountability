@@ -1,15 +1,19 @@
 @import "tailwindcss";
 
+/* Light, iOS-style system: grouped gray background, white cards with a
+ * whisper of shadow, emerald as the single accent. */
 @theme {
-  --color-bg: #0b1220;
-  --color-card: #151e2e;
-  --color-soft: #22304a;
-  --color-ink: #eef2f7;
-  --color-dim: #8ca0b3;
-  --color-accent: #34d399;
-  --color-accent-deep: #10b981;
-  --color-danger: #f87171;
-  --color-warn: #fbbf24;
+  --color-bg: #f2f3f7;
+  --color-card: #ffffff;
+  --color-soft: #e8eaf0;
+  --color-ink: #111827;
+  --color-dim: #6b7280;
+  --color-accent: #047857; /* readable green for text on white */
+  --color-accent-deep: #059669; /* fills, bars, primary buttons */
+  --color-danger: #dc2626;
+  --color-warn: #b45309;
+
+  --shadow-card: 0 1px 2px rgb(16 24 40 / 0.06), 0 4px 16px rgb(16 24 40 / 0.05);
 }
 
 html {
@@ -22,6 +26,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
     Arial, sans-serif;
   -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* Range sliders (mood / scale inputs) */

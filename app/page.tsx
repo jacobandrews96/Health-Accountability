@@ -205,10 +205,16 @@ function MemberCard({
   return (
     <Card>
       <div className="flex items-baseline justify-between gap-2">
-        <h2 className="text-base font-bold">
-          {profile.display_name}
-          {isMe && <span className="font-normal text-dim"> (you)</span>}
-        </h2>
+        <Link
+          href={`/member?id=${profile.id}`}
+          className="min-w-0 active:opacity-60"
+        >
+          <h2 className="text-base font-bold">
+            {profile.display_name}
+            {isMe && <span className="font-normal text-dim"> (you)</span>}
+            <span className="ml-1 font-normal text-dim">›</span>
+          </h2>
+        </Link>
         {streak > 0 ? (
           <span className="shrink-0 text-sm font-semibold text-accent">
             🔥 {streak}-day streak

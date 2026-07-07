@@ -37,14 +37,15 @@ import {
   Spinner,
 } from "@/components/ui";
 
-/* Categorical palette validated for the dark card surface (#151e2e):
- * lightness band, chroma, CVD separation, and 3:1 contrast all pass.
+/* Categorical palette validated for the white card surface: lightness band,
+ * chroma, and CVD separation pass; the aqua's sub-3:1 contrast is relieved
+ * by direct labels + the table view on every chart, per the palette rules.
  * Colors follow the member (join order), never the viewer. */
-const SERIES = ["#199e70", "#3987e5", "#d55181", "#c98500"];
+const SERIES = ["#1baf7a", "#2a78d6", "#e87ba4", "#eda100"];
 
-const INK = "#eef2f7";
-const DIM = "#8ca0b3";
-const GRID = "#22304a";
+const INK = "#111827";
+const DIM = "#6b7280";
+const GRID = "#e8eaf0";
 
 interface TrendsData {
   metrics: Metric[];
@@ -338,7 +339,7 @@ function MetricLineChart({
                   stroke={colorOf.get(p.id)}
                   strokeWidth={2}
                   dot={false}
-                  activeDot={{ r: 5, strokeWidth: 2, stroke: "#151e2e" }}
+                  activeDot={{ r: 5, strokeWidth: 2, stroke: "#ffffff" }}
                   connectNulls
                   isAnimationActive={false}
                   label={(props: {
