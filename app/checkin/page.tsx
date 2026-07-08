@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
-import { formatDay, todayNY } from "@/lib/dates";
+import { addDays, formatDay, todayNY } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
 import type {
   Checkin,
@@ -29,12 +29,31 @@ const WORKOUT_KINDS = ["Lifting", "Cardio", "Sports", "Walk", "Yoga"];
 
 export default function CheckinPage() {
   const { userId } = useApp();
-  // Reactive: rolls over at midnight NY, which refetches the whole form for
-  // the new day (the effect below depends on `day`).
-  const day = useTodayNY();
+  // Reactive: rolls over at midnight NY.
+  const today = useTodayNY();
+  // Oldest editable day — a 7-day window ending today.
+  const minDay = addDays(today, -6);
+  /**
+   * null = following `today` (the form rolls over at midnight with it).
+   * A day string = the user navigated to a past day; the derived
+   * `selectedDay` clamps it into the edit window if midnight shifts the
+   * window under them, but never jumps them back to today.
+   */
+  const [navigatedDay, setNavigatedDay] = useState<string | null>(null);
+  const selectedDay =
+    navigatedDay === null || navigatedDay >= today ? today : navigatedDay;
+  // Midnight can shift the window while someone is editing the oldest day.
+  // Never silently retarget their edits to a different day — lock instead.
+  const dayLocked = selectedDay < minDay;
 
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  /** Which day the form state currently holds data for; null = none yet. */
+  const [loadedDay, setLoadedDay] = useState<string | null>(null);
+  /** Same value, readable inside the load closure without becoming a dep. */
+  const loadedDayRef = useRef<string | null>(null);
+  const [loadError, setLoadError] = useState<{
+    day: string;
+    message: string;
+  } | null>(null);
 
   const [metrics, setMetrics] = useState<Metric[]>([]);
   /**
@@ -42,7 +61,7 @@ export default function CheckinPage() {
    * on save). Yes/no metrics use "1" / "0" ("" until first touched).
    */
   const [values, setValues] = useState<Record<string, string>>({});
-  /** Metric ids that currently have a daily_logs row for today. */
+  /** Metric ids that currently have a daily_logs row for the selected day. */
   const [loggedIds, setLoggedIds] = useState<Set<string>>(new Set());
   /** Metric ids whose current input isn't a number (blocks save). */
   const [invalidIds, setInvalidIds] = useState<Set<string>>(new Set());
@@ -76,11 +95,19 @@ export default function CheckinPage() {
     [],
   );
 
-  /** Bump to refetch. Callers set loading=true first (it starts true for mount). */
+  /** Bump to refetch the selected day. */
   const [reloadKey, setReloadKey] = useState(0);
 
+  // Stale-keyed, like recap: data/error for a different day than the one
+  // selected = still loading.
+  const currentError =
+    loadError && loadError.day === selectedDay ? loadError.message : null;
+  const loading = !dayLocked && loadedDay !== selectedDay && !currentError;
+
   useEffect(() => {
+    if (dayLocked) return;
     let cancelled = false;
+    const day = selectedDay;
 
     async function load() {
       const [metricsRes, logsRes, checkinRes, workoutsRes] = await Promise.all([
@@ -118,8 +145,7 @@ export default function CheckinPage() {
         checkinRes.error ??
         workoutsRes.error;
       if (firstError) {
-        setLoadError(firstError.message);
-        setLoading(false);
+        setLoadError({ day, message: firstError.message });
         return;
       }
 
@@ -144,18 +170,40 @@ export default function CheckinPage() {
       setMetrics(loadedMetrics);
       setValues(prefill);
       setLoggedIds(logged);
+      setInvalidIds(new Set());
       setMood(checkin?.mood ?? null);
       setMoodNote(checkin?.mood_note ?? "");
       setSleepQuality(checkin?.sleep_quality ?? null);
       setWorkouts((workoutsRes.data ?? []) as Workout[]);
-      setLoading(false);
+      if (day !== loadedDayRef.current) {
+        // A different day than the form held before: drop any half-typed
+        // workout draft so it can't be submitted onto the wrong day.
+        setWKind("");
+        setWDuration("");
+        setWNote("");
+        setWDetails([]);
+        setShowDetails(false);
+        setShowWorkoutForm(false);
+      }
+      loadedDayRef.current = day;
+      setLoadedDay(day);
+      setLoadError(null);
     }
 
     load();
     return () => {
       cancelled = true;
     };
-  }, [userId, day, reloadKey]);
+  }, [userId, selectedDay, reloadKey, dayLocked]);
+
+  /** Navigate the edit window. Landing on today resumes following rollover. */
+  function goToDay(day: string) {
+    setLoadError(null);
+    setSaveError(null);
+    setWorkoutError(null);
+    setSaved(false);
+    setNavigatedDay(day >= today ? null : day);
+  }
 
   function setMetricValue(id: string, v: string) {
     setValues((prev) => ({ ...prev, [id]: v }));
@@ -170,12 +218,11 @@ export default function CheckinPage() {
   async function save() {
     if (saving) return;
 
-    // Never write onto a stale day (tab restored after midnight before the
-    // rollover hook fires). The form refetches for the new day on its own.
-    if (todayNY() !== day) {
-      setSaveError(
-        "It's a new day. The form is reloading for today — check your numbers and save again.",
-      );
+    // Never write outside the 7-day edit window — a tab restored after
+    // midnight can shift the window before the rollover hook fires.
+    const now = todayNY();
+    if (selectedDay > now || selectedDay < addDays(now, -6)) {
+      setSaveError("That day is settled history — it can't be edited anymore.");
       return;
     }
 
@@ -199,7 +246,12 @@ export default function CheckinPage() {
         invalid.add(m.id);
         continue;
       }
-      upserts.push({ user_id: userId, metric_id: m.id, day, value: num });
+      upserts.push({
+        user_id: userId,
+        metric_id: m.id,
+        day: selectedDay,
+        value: num,
+      });
     }
     if (invalid.size > 0) {
       setInvalidIds(invalid);
@@ -230,7 +282,7 @@ export default function CheckinPage() {
         .from("daily_logs")
         .delete()
         .eq("user_id", userId)
-        .eq("day", day)
+        .eq("day", selectedDay)
         .in("metric_id", clears);
       if (res.error) errMsg = res.error.message;
     }
@@ -239,7 +291,7 @@ export default function CheckinPage() {
       const checkinRes = await supabase.from("checkins").upsert(
         {
           user_id: userId,
-          day,
+          day: selectedDay,
           mood,
           mood_note: moodNote.trim() === "" ? null : moodNote.trim(),
           sleep_quality: sleepQuality,
@@ -257,7 +309,7 @@ export default function CheckinPage() {
         .from("daily_logs")
         .select("metric_id")
         .eq("user_id", userId)
-        .eq("day", day);
+        .eq("day", selectedDay);
       if (!resync.error && resync.data) {
         setLoggedIds(new Set(resync.data.map((r) => r.metric_id as string)));
       }
@@ -267,12 +319,10 @@ export default function CheckinPage() {
     }
 
     setSaving(false);
-    setLoggedIds((prev) => {
-      const next = new Set(prev);
-      for (const id of clears) next.delete(id);
-      for (const u of upserts) next.add(u.metric_id);
-      return next;
-    });
+    // Refetch instead of hand-merging loggedIds: the server is the truth,
+    // and a merge could land on a different day's state (day nav or a
+    // midnight rollover racing the save).
+    setReloadKey((k) => k + 1);
     setSaved(true);
     if (savedTimer.current) clearTimeout(savedTimer.current);
     savedTimer.current = setTimeout(() => setSaved(false), 2500);
@@ -281,6 +331,11 @@ export default function CheckinPage() {
   async function addWorkout() {
     const kind = wKind.trim();
     if (!kind || addingWorkout) return;
+    const now = todayNY();
+    if (selectedDay > now || selectedDay < addDays(now, -6)) {
+      setWorkoutError("That day is settled history — it can't be edited anymore.");
+      return;
+    }
     const rawDuration = wDuration.trim();
     const durationNum = rawDuration === "" ? null : Number(rawDuration);
     if (durationNum !== null && (!Number.isFinite(durationNum) || durationNum < 0)) {
@@ -312,7 +367,7 @@ export default function CheckinPage() {
       .from("workouts")
       .insert({
         user_id: userId,
-        day,
+        day: selectedDay,
         kind,
         duration_min: durationNum === null ? null : Math.round(durationNum),
         note: wNote.trim() === "" ? null : wNote.trim(),
@@ -351,22 +406,68 @@ export default function CheckinPage() {
     <>
       <PageHeader
         title="Daily check-in"
-        subtitle={`${formatDay(day)} — under a minute. Go.`}
+        subtitle={
+          selectedDay === today
+            ? `${formatDay(today)} — under a minute. Go.`
+            : formatDay(selectedDay)
+        }
       />
 
-      {loading ? (
+      <div className="mb-4 flex items-center justify-between rounded-2xl bg-card px-2 py-1">
+        <button
+          type="button"
+          onClick={() => goToDay(addDays(selectedDay, -1))}
+          disabled={selectedDay <= minDay || saving || addingWorkout}
+          aria-label="Previous day"
+          className="flex h-11 w-11 items-center justify-center text-xl text-dim disabled:opacity-30"
+        >
+          ‹
+        </button>
+        <span className="text-[14px] font-bold">
+          {formatDay(selectedDay)}
+          {selectedDay === today && (
+            <span className="font-normal text-dim"> (today)</span>
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={() => goToDay(addDays(selectedDay, 1))}
+          disabled={selectedDay >= today || saving || addingWorkout}
+          aria-label="Next day"
+          className="flex h-11 w-11 items-center justify-center text-xl text-dim disabled:opacity-30"
+        >
+          ›
+        </button>
+      </div>
+
+      {selectedDay !== today && !dayLocked && (
+        <div className="mb-4 rounded-xl bg-warn/10 px-3.5 py-3 text-sm font-semibold text-warn">
+          Editing a past day. Be honest — this still counts.
+        </div>
+      )}
+
+      {dayLocked ? (
+        <>
+          <div className="mb-4 rounded-xl bg-warn/10 px-3.5 py-3 text-sm font-semibold text-warn">
+            This day just left the 7-day edit window while you were on it.
+            It&apos;s settled history now — nothing was changed.
+          </div>
+          <Button className="w-full" onClick={() => goToDay(today)}>
+            Back to today
+          </Button>
+        </>
+      ) : loading ? (
         <div className="flex justify-center py-20">
           <Spinner />
         </div>
-      ) : loadError ? (
+      ) : currentError ? (
         <>
-          <ErrorBanner message={loadError} />
+          <ErrorBanner message={currentError} />
           <Button
             variant="secondary"
             className="w-full"
             onClick={() => {
               setLoadError(null);
-              setLoading(true);
               setReloadKey((k) => k + 1);
             }}
           >
@@ -432,7 +533,11 @@ export default function CheckinPage() {
           <SectionTitle>Workouts</SectionTitle>
           {workoutError && <ErrorBanner message={workoutError} />}
           {workouts.length === 0 && !showWorkoutForm && (
-            <EmptyState>No workouts logged today.</EmptyState>
+            <EmptyState>
+              {selectedDay === today
+                ? "No workouts logged today."
+                : "No workouts logged this day."}
+            </EmptyState>
           )}
           {workouts.length > 0 && (
             <Card className="py-1">

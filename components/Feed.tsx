@@ -11,11 +11,13 @@ import {
   todayNY,
 } from "@/lib/dates";
 import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
+import { dayDigest } from "@/lib/digest";
 import Link from "next/link";
 import type {
   Checkin,
   DailyLog,
   Entry,
+  Metric,
   Reaction,
   Vice,
   ViceEvent,
@@ -27,6 +29,9 @@ const FEED_DAYS = 14;
 /* Check-ins only surface for a few days — celebrate showing up without
  * wallpapering the feed and burying confessions and urges. */
 const CHECKIN_FEED_DAYS = 3;
+/* The digest's "Nth day straight" callouts need deeper log history than the
+ * feed window itself. */
+const DIGEST_LOG_DAYS = 60;
 const QUICK_EMOJI = ["👊", "🔥", "😂", "💀"];
 
 interface FeedItem {
@@ -38,8 +43,8 @@ interface FeedItem {
   kind: "confession" | "urge" | "slip" | "checkin";
   body: string | null;
   viceName?: string;
-  /** Summary line for check-in items ("Mood 8/10 · 5 metrics · Lifting"). */
-  summary?: string;
+  /** Digest parts for check-in items (lib/digest dayDigest), joined with " · ". */
+  summaryParts?: string[];
   /** The day a check-in item belongs to (links to the member day view). */
   day?: string;
 }
@@ -63,19 +68,31 @@ export default function Feed() {
     async function load() {
       const sinceDay = addDays(todayNY(), -FEED_DAYS);
       const since = `${sinceDay}T00:00:00Z`;
-      const [entriesRes, eventsRes, vicesRes, reactionsRes, checkinsRes, logsRes, workoutsRes] =
-        await Promise.all([
-          supabase.from("entries").select("*").gte("created_at", since),
-          supabase.from("vice_events").select("*").gte("occurred_at", since),
-          supabase.from("vices").select("*"),
-          supabase.from("reactions").select("*").gte("created_at", since),
-          supabase
-            .from("checkins")
-            .select("*")
-            .gte("day", addDays(todayNY(), -(CHECKIN_FEED_DAYS - 1))),
-          supabase.from("daily_logs").select("id,user_id,day").gte("day", sinceDay),
-          supabase.from("workouts").select("*").gte("day", sinceDay),
-        ]);
+      const [
+        entriesRes,
+        eventsRes,
+        vicesRes,
+        reactionsRes,
+        checkinsRes,
+        metricsRes,
+        logsRes,
+        workoutsRes,
+      ] = await Promise.all([
+        supabase.from("entries").select("*").gte("created_at", since),
+        supabase.from("vice_events").select("*").gte("occurred_at", since),
+        supabase.from("vices").select("*"),
+        supabase.from("reactions").select("*").gte("created_at", since),
+        supabase
+          .from("checkins")
+          .select("*")
+          .gte("day", addDays(todayNY(), -(CHECKIN_FEED_DAYS - 1))),
+        supabase.from("metrics").select("*"),
+        supabase
+          .from("daily_logs")
+          .select("*")
+          .gte("day", addDays(todayNY(), -DIGEST_LOG_DAYS)),
+        supabase.from("workouts").select("*").gte("day", sinceDay),
+      ]);
 
       if (cancelled) return;
 
@@ -85,6 +102,7 @@ export default function Feed() {
         vicesRes.error ??
         reactionsRes.error ??
         checkinsRes.error ??
+        metricsRes.error ??
         logsRes.error ??
         workoutsRes.error;
       if (firstError) {
@@ -92,12 +110,16 @@ export default function Feed() {
         return;
       }
 
-      const logsByUserDay = new Map<string, number>();
-      for (const l of (logsRes.data ?? []) as Pick<DailyLog, "user_id" | "day">[]) {
-        const k = `${l.user_id}:${l.day}`;
-        logsByUserDay.set(k, (logsByUserDay.get(k) ?? 0) + 1);
-      }
+      const metricRows = (metricsRes.data ?? []) as Metric[];
+      const logRows = (logsRes.data ?? []) as DailyLog[];
       const workoutRows = (workoutsRes.data ?? []) as Workout[];
+
+      // Slips per member per NY day, for the digest's slip count.
+      const slipsByUserDay = new Map<string, number>();
+      for (const e of (eventsRes.data ?? []) as ViceEvent[]) {
+        const k = `${e.user_id}:${timestampToDayNY(e.occurred_at)}`;
+        slipsByUserDay.set(k, (slipsByUserDay.get(k) ?? 0) + 1);
+      }
 
       const viceById = new Map(
         ((vicesRes.data ?? []) as Vice[]).map((v) => [v.id, v]),
@@ -128,19 +150,8 @@ export default function Feed() {
         ),
         // Check-ins belong on the feed too — showing up is the whole habit,
         // and it deserves the same spotlight (and reactions) as a confession.
-        ...((checkinsRes.data ?? []) as Checkin[]).map((c): FeedItem => {
-          const parts: string[] = [];
-          if (c.mood !== null) parts.push(`Mood ${c.mood}/10`);
-          const n = logsByUserDay.get(`${c.user_id}:${c.day}`) ?? 0;
-          if (n > 0) parts.push(`${n} metric${n === 1 ? "" : "s"}`);
-          for (const w of workoutRows) {
-            if (w.user_id === c.user_id && w.day === c.day) {
-              parts.push(
-                w.duration_min != null ? `${w.kind} (${w.duration_min} min)` : w.kind,
-              );
-            }
-          }
-          return {
+        ...((checkinsRes.data ?? []) as Checkin[]).map(
+          (c): FeedItem => ({
             key: `checkin:${c.id}`,
             targetType: "checkin",
             id: c.id,
@@ -148,10 +159,22 @@ export default function Feed() {
             ts: c.created_at,
             kind: "checkin",
             body: c.mood_note,
-            summary: parts.join(" · "),
+            // Rule-based digest — empty parts (no metrics, no logs) still
+            // leaves a plain "checked in ✓" item.
+            summaryParts: dayDigest({
+              userId: c.user_id,
+              day: c.day,
+              metrics: metricRows,
+              logs: logRows,
+              workouts: workoutRows.filter(
+                (w) => w.user_id === c.user_id && w.day === c.day,
+              ),
+              slips: slipsByUserDay.get(`${c.user_id}:${c.day}`) ?? 0,
+              mood: c.mood,
+            }),
             day: c.day,
-          };
-        }),
+          }),
+        ),
       ].sort((a, b) => (a.ts < b.ts ? 1 : -1));
 
       setItems(feed.slice(0, 30));
@@ -293,14 +316,27 @@ export default function Feed() {
                   </span>
                 </div>
 
-                {item.kind === "checkin" && item.summary && (
-                  <Link
-                    href={`/member?id=${item.userId}&day=${item.day}`}
-                    className="mt-1 block text-[13px] text-dim underline-offset-2 active:opacity-60"
-                  >
-                    {item.summary} <span className="underline">see the day ›</span>
-                  </Link>
-                )}
+                {item.kind === "checkin" &&
+                  item.summaryParts &&
+                  item.summaryParts.length > 0 && (
+                    <Link
+                      href={`/member?id=${item.userId}&day=${item.day}`}
+                      className="mt-1 block text-[13px] text-dim underline-offset-2 active:opacity-60"
+                    >
+                      {item.summaryParts.map((part, i) => (
+                        <span key={`${i}:${part}`}>
+                          {i > 0 && " · "}
+                          {part.includes("day straight") ? (
+                            // Streaks are the win — make them read loud.
+                            <span className="font-bold text-accent">{part}</span>
+                          ) : (
+                            part
+                          )}
+                        </span>
+                      ))}{" "}
+                      <span className="underline">see the day ›</span>
+                    </Link>
+                  )}
                 {item.body && (
                   <p className="mt-1 text-[14px] text-ink">{item.body}</p>
                 )}

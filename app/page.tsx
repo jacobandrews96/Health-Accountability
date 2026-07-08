@@ -5,10 +5,13 @@ import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
 import Feed from "@/components/Feed";
+import Confetti from "@/components/Confetti";
+import HabitTiles from "@/components/HabitTiles";
 import { addDays, formatDay, weekStart } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
 import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
 import { computeProgress, formatValue } from "@/lib/goals";
+import { doneDays, featuredHabits } from "@/lib/habits";
 import type { Checkin, DailyLog, Metric, Profile, WeeklyGoal, Workout } from "@/lib/types";
 import {
   Button,
@@ -19,11 +22,15 @@ import {
   Spinner,
 } from "@/components/ui";
 
+// No daily_logs window: tile streaks walk arbitrarily far back (same
+// rationale as the unbounded checkins query below), and two people logging
+// a handful of metrics is a few hundred KB per year at worst.
+
 interface HomeData {
   /** Checkins for all members, full history (tiny table — powers streaks). */
   checkins: Checkin[];
-  /** This week's daily_logs for all members (today + goal progress). */
-  weekLogs: DailyLog[];
+  /** daily_logs for all members (tiles, goals, today strip). */
+  logs: DailyLog[];
   /** Today's workouts for all members. */
   todayWorkouts: Workout[];
   /** This week's goals for all members. */
@@ -58,6 +65,12 @@ export default function HomePage() {
   const [data, setData] = useState<HomeData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  /** Bumped after a tile write so everything resyncs with the database. */
+  const [reloadKey, setReloadKey] = useState(0);
+  /** Day made perfect via tile taps — shows "Perfect day ✓" before the refetch lands. */
+  const [tapPerfectDay, setTapPerfectDay] = useState<string | null>(null);
+  /** Day the confetti is currently bursting for; null = unmounted. */
+  const [confettiDay, setConfettiDay] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,7 +82,7 @@ export default function HomePage() {
           // No date window: streaks walk arbitrarily far back, and two
           // people logging daily is a few KB per year.
           supabase.from("checkins").select("*"),
-          supabase.from("daily_logs").select("*").gte("day", week),
+          supabase.from("daily_logs").select("*"),
           supabase.from("workouts").select("*").eq("day", day).order("created_at"),
           supabase.from("weekly_goals").select("*").eq("week_start", week),
           supabase.from("metrics").select("*"),
@@ -90,7 +103,7 @@ export default function HomePage() {
 
       setData({
         checkins: (checkinsRes.data ?? []) as Checkin[],
-        weekLogs: (logsRes.data ?? []) as DailyLog[],
+        logs: (logsRes.data ?? []) as DailyLog[],
         todayWorkouts: (workoutsRes.data ?? []) as Workout[],
         goals: (goalsRes.data ?? []) as WeeklyGoal[],
         metrics: (metricsRes.data ?? []) as Metric[],
@@ -101,7 +114,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [day, refreshTick]);
+  }, [day, refreshTick, reloadKey]);
 
   async function handleSignOut() {
     setSigningOut(true);
@@ -117,6 +130,38 @@ export default function HomePage() {
 
   const iLogged =
     data?.checkins.some((c) => c.user_id === me.id && c.day === day) ?? false;
+
+  const myLogs = data ? data.logs.filter((l) => l.user_id === me.id) : [];
+  const myFeatured = data ? featuredHabits(data.metrics, me.id) : [];
+  // Perfect day straight from the data — habits logged via check-in count too.
+  const perfectFromData =
+    myFeatured.length >= 2 &&
+    myFeatured.every((h) => doneDays(myLogs, h.id).has(day));
+
+  // When fresh data arrives and says the set is NOT complete (a habit was
+  // toggled back off), clear the tap-path banner — it must not stick.
+  const [seenData, setSeenData] = useState<HomeData | null>(null);
+  if (data !== seenData) {
+    setSeenData(data);
+    if (data && !perfectFromData && tapPerfectDay !== null) {
+      setTapPerfectDay(null);
+    }
+  }
+
+  const perfectDay = perfectFromData || tapPerfectDay === day;
+
+  /** The tap that completed the set: banner now, confetti once per day. */
+  function celebrate() {
+    setTapPerfectDay(day);
+    const key = `ha-perfect-${day}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      // sessionStorage unavailable (private mode) — celebrate anyway.
+    }
+    setConfettiDay(day);
+  }
 
   return (
     <>
@@ -140,6 +185,27 @@ export default function HomePage() {
 
       {data && (
         <div className="flex flex-col gap-3">
+          {/* My arcade tiles — the first thing on the page. */}
+          <section className="relative">
+            <HabitTiles
+              profile={me}
+              isMe
+              day={day}
+              metrics={data.metrics}
+              logs={myLogs}
+              onLogged={() => setReloadKey((k) => k + 1)}
+              onPerfectDay={celebrate}
+            />
+            {perfectDay && (
+              <p className="mt-2 text-center text-[15px] font-bold text-accent">
+                Perfect day ✓
+              </p>
+            )}
+            {confettiDay === day && (
+              <Confetti onDone={() => setConfettiDay(null)} />
+            )}
+          </section>
+
           {profiles.map((p) => (
             <MemberCard
               key={p.id}
@@ -177,6 +243,39 @@ export default function HomePage() {
   );
 }
 
+/**
+ * The member's actual numbers today, one compact line:
+ * "Mood 7 · 200.5 lbs · 2200 kcal · 9500 steps". Max 4 values, then "+n more".
+ */
+function todayNumbers(
+  profile: Profile,
+  day: string,
+  data: HomeData,
+  checkin: Checkin | null,
+): string[] {
+  const metricById = new Map(data.metrics.map((m) => [m.id, m]));
+  const parts: string[] = [];
+  if (checkin?.mood != null) parts.push(`Mood ${checkin.mood}`);
+  const rows = data.logs
+    .filter((l) => l.user_id === profile.id && l.day === day)
+    .flatMap((l) => {
+      const metric = metricById.get(l.metric_id);
+      // Yes/no habits read loud as tiles; a bare 1/0 isn't worth a slot here.
+      if (!metric || metric.type === "yesno") return [];
+      return [{ log: l, metric }];
+    })
+    .sort((a, b) => a.metric.sort - b.metric.sort);
+  for (const { log, metric } of rows) {
+    parts.push(
+      metric.unit
+        ? `${formatValue(Number(log.value))} ${metric.unit}`
+        : `${metric.name} ${formatValue(Number(log.value))}`,
+    );
+  }
+  if (parts.length > 4) return [...parts.slice(0, 4), `+${parts.length - 4} more`];
+  return parts;
+}
+
 function MemberCard({
   profile,
   isMe,
@@ -197,10 +296,8 @@ function MemberCard({
     data.checkins.filter((c) => c.user_id === profile.id).map((c) => c.day),
   );
   const streak = streakFrom(checkinDays, day);
-  const metricCount = data.weekLogs.filter(
-    (l) => l.user_id === profile.id && l.day === day,
-  ).length;
   const workouts = data.todayWorkouts.filter((w) => w.user_id === profile.id);
+  const numbers = todayNumbers(profile, day, data, checkin);
 
   return (
     <Card>
@@ -224,15 +321,30 @@ function MemberCard({
         )}
       </div>
 
+      {/* Partner's habit tiles — the social mirror, right under their name.
+          My own tiles already run big at the top of the page. */}
+      {!isMe && (
+        <div className="mt-3">
+          <HabitTiles
+            profile={profile}
+            isMe={false}
+            day={day}
+            metrics={data.metrics}
+            logs={data.logs.filter((l) => l.user_id === profile.id)}
+          />
+        </div>
+      )}
+
       {checkin ? (
         <>
           <p className="mt-2 text-sm font-semibold text-accent">
             Logged today ✓
           </p>
-          <p className="mt-1 text-sm text-dim">
-            {checkin.mood !== null && `Mood ${checkin.mood}/10 · `}
-            {metricCount} {metricCount === 1 ? "metric" : "metrics"}
-          </p>
+          {numbers.length > 0 && (
+            <p className="mt-1 truncate text-sm text-dim">
+              {numbers.join(" · ")}
+            </p>
+          )}
           {workouts.map((w) => (
             <p key={w.id} className="mt-1 text-sm text-dim">
               + workout: {w.kind}
@@ -257,7 +369,7 @@ function MemberCard({
         </>
       )}
 
-      <WeekGoals profile={profile} isMe={isMe} data={data} />
+      <WeekGoals profile={profile} isMe={isMe} day={day} data={data} />
     </Card>
   );
 }
@@ -266,14 +378,18 @@ function MemberCard({
 function WeekGoals({
   profile,
   isMe,
+  day,
   data,
 }: {
   profile: Profile;
   isMe: boolean;
+  day: string;
   data: HomeData;
 }) {
   const goals = data.goals.filter((g) => g.user_id === profile.id);
   const metricById = new Map(data.metrics.map((m) => [m.id, m]));
+  // Logs go LOG_DAYS back for the tiles; goal progress only wants this week.
+  const weekLogs = data.logs.filter((l) => l.day >= weekStart(day));
 
   if (goals.length === 0) {
     return (
@@ -298,7 +414,7 @@ function WeekGoals({
         {goals.map((g) => {
           const metric = metricById.get(g.metric_id);
           if (!metric) return null;
-          const p = computeProgress(metric, g, data.weekLogs, false);
+          const p = computeProgress(metric, g, weekLogs, false);
           const barColor =
             p.status === "hit"
               ? "bg-accent-deep"

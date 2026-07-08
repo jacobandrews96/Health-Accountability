@@ -43,8 +43,14 @@ create table if not exists metrics (
   agg text not null default 'sum' check (agg in ('sum','avg','count_days','last')),
   sort int not null default 0,
   archived boolean not null default false,
+  -- Featured yes/no habits render as one-tap arcade tiles on Home (max 4,
+  -- enforced in the app).
+  featured boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+-- Safe upgrade for databases created before the featured column existed.
+alter table metrics add column if not exists featured boolean not null default false;
 
 -- One value per user + metric + day.
 create table if not exists daily_logs (
@@ -201,13 +207,13 @@ begin
              split_part(new.email, '@', 1))
   );
 
-  insert into public.metrics (user_id, name, type, unit, cadence, direction, agg, sort) values
-    (new.id, 'Weight',           'number',   'lbs',   'daily', 'lower',  'last', 1),
-    (new.id, 'Calories',         'number',   'kcal',  'daily', 'cap',    'avg',  2),
-    (new.id, 'Steps',            'count',    'steps', 'daily', 'higher', 'avg',  3),
-    (new.id, 'Gym session',      'yesno',    null,    'daily', 'higher', 'sum',  4),
-    (new.id, 'Meals ordered in', 'count',    'meals', 'daily', 'cap',    'sum',  5),
-    (new.id, 'Sleep',            'duration', 'hours', 'daily', 'higher', 'avg',  6);
+  insert into public.metrics (user_id, name, type, unit, cadence, direction, agg, sort, featured) values
+    (new.id, 'Weight',           'number',   'lbs',   'daily', 'lower',  'last', 1, false),
+    (new.id, 'Calories',         'number',   'kcal',  'daily', 'cap',    'avg',  2, false),
+    (new.id, 'Steps',            'count',    'steps', 'daily', 'higher', 'avg',  3, false),
+    (new.id, 'Gym session',      'yesno',    null,    'daily', 'higher', 'sum',  4, true),
+    (new.id, 'Meals ordered in', 'count',    'meals', 'daily', 'cap',    'sum',  5, false),
+    (new.id, 'Sleep',            'duration', 'hours', 'daily', 'higher', 'avg',  6, false);
 
   insert into public.vices (user_id, name) values
     (new.id, 'Drinking'),

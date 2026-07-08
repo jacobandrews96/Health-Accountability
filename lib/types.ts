@@ -24,6 +24,8 @@ export interface Metric {
   agg: MetricAgg;
   sort: number;
   archived: boolean;
+  /** Featured yes/no habits render as one-tap arcade tiles on Home. */
+  featured: boolean;
   created_at: string;
 }
 

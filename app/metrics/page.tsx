@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
 import { supabase } from "@/lib/supabase";
 import { useApp } from "@/components/AppShell";
+import { MAX_FEATURED } from "@/lib/habits";
 import type {
   Metric,
   MetricAgg,
@@ -99,6 +101,13 @@ export default function MetricsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
 
+  // Star toggle state: one write in flight at a time, and the row (if any)
+  // currently showing the featured-cap error.
+  const [starBusyId, setStarBusyId] = useState<string | null>(null);
+  const [capErrorId, setCapErrorId] = useState<string | null>(null);
+  // Refetch on focus so this tab's featured counts track the other phone.
+  const refreshTick = useVisibilityRefresh();
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -118,25 +127,80 @@ export default function MetricsPage() {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, refreshTick]);
 
   const active = (metrics ?? []).filter((m) => !m.archived);
   const archived = (metrics ?? []).filter((m) => m.archived);
+  const featuredCount = active.filter(
+    (m) => m.type === "yesno" && m.featured,
+  ).length;
   const nextSort =
     (metrics ?? []).reduce((mx, m) => Math.max(mx, m.sort), 0) + 1;
 
   function onSaved(saved: Metric) {
     setMetrics((prev) => upsertSorted(prev ?? [], saved));
     setEditing(null);
+    setCapErrorId(null);
+  }
+
+  async function toggleFeatured(m: Metric) {
+    if (starBusyId) return;
+    setRowError(null);
+    const next = !m.featured;
+    if (next && featuredCount >= MAX_FEATURED) {
+      setCapErrorId(m.id);
+      return;
+    }
+    setCapErrorId(null);
+    setStarBusyId(m.id);
+    // The cap must hold against the DATABASE, not this tab's snapshot —
+    // the other phone (or an open form) may have featured one meanwhile.
+    if (next) {
+      const fresh = await supabase
+        .from("metrics")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("featured", true)
+        .eq("archived", false)
+        .neq("id", m.id);
+      if (!fresh.error && (fresh.data?.length ?? 0) >= MAX_FEATURED) {
+        setStarBusyId(null);
+        setCapErrorId(m.id);
+        return;
+      }
+    }
+    // Optimistic: flip immediately, revert if the write fails.
+    setMetrics((prev) =>
+      (prev ?? []).map((x) => (x.id === m.id ? { ...x, featured: next } : x)),
+    );
+    const { error } = await supabase
+      .from("metrics")
+      .update({ featured: next })
+      .eq("id", m.id);
+    setStarBusyId(null);
+    if (error) {
+      setMetrics((prev) =>
+        (prev ?? []).map((x) =>
+          x.id === m.id ? { ...x, featured: m.featured } : x,
+        ),
+      );
+      setRowError(error.message);
+    }
   }
 
   async function setArchivedFlag(m: Metric, flag: boolean) {
     if (busyId) return;
     setBusyId(m.id);
     setRowError(null);
+    setCapErrorId(null);
+    // Archiving a featured habit pulls it off Home too — one write.
+    const payload =
+      flag && m.featured
+        ? { archived: true, featured: false }
+        : { archived: flag };
     const { data, error } = await supabase
       .from("metrics")
-      .update({ archived: flag })
+      .update(payload)
       .eq("id", m.id)
       .select()
       .single();
@@ -158,6 +222,7 @@ export default function MetricsPage() {
       return;
     setBusyId(m.id);
     setRowError(null);
+    setCapErrorId(null);
     const { error } = await supabase.from("metrics").delete().eq("id", m.id);
     setBusyId(null);
     if (error) {
@@ -202,6 +267,7 @@ export default function MetricsPage() {
             metric={null}
             userId={userId}
             nextSort={nextSort}
+            featuredElsewhere={featuredCount}
             onDone={onSaved}
             onCancel={() => setEditing(null)}
           />
@@ -226,28 +292,52 @@ export default function MetricsPage() {
                     metric={m}
                     userId={userId}
                     nextSort={nextSort}
+                    featuredElsewhere={featuredCount - (m.featured ? 1 : 0)}
                     onDone={onSaved}
                     onCancel={() => setEditing(null)}
                   />
                 ) : (
-                  <MetricRow metric={m}>
-                    <Button
-                      variant="secondary"
-                      className="min-h-11 px-3 py-2 text-[13px]"
-                      disabled={busyId !== null}
-                      onClick={() => setEditing(m.id)}
-                    >
-                      Edit
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      className="min-h-11 px-3 py-2 text-[13px]"
-                      disabled={busyId !== null}
-                      onClick={() => setArchivedFlag(m, true)}
-                    >
-                      {busyId === m.id ? "…" : "Archive"}
-                    </Button>
-                  </MetricRow>
+                  <>
+                    <MetricRow metric={m}>
+                      {m.type === "yesno" && (
+                        <button
+                          type="button"
+                          aria-pressed={m.featured}
+                          disabled={busyId !== null}
+                          onClick={() => toggleFeatured(m)}
+                          className={`min-h-11 rounded-xl px-3 py-2 text-[13px] font-semibold transition-colors disabled:opacity-50 ${
+                            m.featured
+                              ? "bg-accent-deep/10 text-accent"
+                              : "bg-soft text-dim"
+                          }`}
+                        >
+                          {m.featured ? "★ Featured" : "☆ Feature"}
+                        </button>
+                      )}
+                      <Button
+                        variant="secondary"
+                        className="min-h-11 px-3 py-2 text-[13px]"
+                        disabled={busyId !== null}
+                        onClick={() => setEditing(m.id)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="min-h-11 px-3 py-2 text-[13px]"
+                        disabled={busyId !== null}
+                        onClick={() => setArchivedFlag(m, true)}
+                      >
+                        {busyId === m.id ? "…" : "Archive"}
+                      </Button>
+                    </MetricRow>
+                    {capErrorId === m.id && (
+                      <p className="mt-1.5 text-xs font-semibold text-danger">
+                        Max {MAX_FEATURED} headline habits. Unfeature one
+                        first.
+                      </p>
+                    )}
+                  </>
                 )}
               </li>
             ))}
@@ -315,14 +405,19 @@ function MetricRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="min-w-0 flex-1">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="min-w-0 grow basis-40">
         <p className="font-semibold">{metric.name}</p>
         <p className="mt-0.5 text-xs leading-relaxed text-dim">
+          {metric.featured && (
+            <span aria-hidden className="text-accent">
+              ★{" "}
+            </span>
+          )}
           {summarize(metric)}
         </p>
       </div>
-      <div className="flex shrink-0 gap-2">{children}</div>
+      <div className="ml-auto flex shrink-0 gap-2">{children}</div>
     </div>
   );
 }
@@ -332,17 +427,22 @@ function MetricForm({
   metric,
   userId,
   nextSort,
+  featuredElsewhere,
   onDone,
   onCancel,
 }: {
   metric: Metric | null;
   userId: string;
   nextSort: number;
+  /** How many OTHER active yes/no habits are already featured. */
+  featuredElsewhere: number;
   onDone: (saved: Metric) => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(metric?.name ?? "");
   const [type, setType] = useState<MetricType>(metric?.type ?? "number");
+  const [featured, setFeatured] = useState(metric?.featured ?? false);
+  const [featureError, setFeatureError] = useState<string | null>(null);
   const [unit, setUnit] = useState(metric?.unit ?? "");
   const [cadence, setCadence] = useState<MetricCadence>(
     metric?.cadence ?? "daily",
@@ -357,11 +457,47 @@ function MetricForm({
   // Yes/no and scale have no meaningful unit.
   const unitless = type === "yesno" || type === "scale";
 
+  function toggleFeature() {
+    if (featured) {
+      setFeatured(false);
+      setFeatureError(null);
+      return;
+    }
+    if (featuredElsewhere >= MAX_FEATURED) {
+      setFeatureError(
+        `Max ${MAX_FEATURED} headline habits. Unfeature one first.`,
+      );
+      return;
+    }
+    setFeatured(true);
+    setFeatureError(null);
+  }
+
   async function save() {
     const trimmed = name.trim();
     if (!trimmed || saving) return;
     setSaving(true);
     setError(null);
+    const wantsFeatured = type === "yesno" && featured;
+    if (wantsFeatured) {
+      // Re-check the cap against the database at write time — the star
+      // buttons (or the other phone) may have changed the count since
+      // this form was opened.
+      const fresh = await supabase
+        .from("metrics")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("featured", true)
+        .eq("archived", false);
+      const others = (fresh.data ?? []).filter((r) => r.id !== metric?.id);
+      if (!fresh.error && others.length >= MAX_FEATURED) {
+        setSaving(false);
+        setError(
+          `Max ${MAX_FEATURED} headline habits. Unfeature one first — this saves without featuring.`,
+        );
+        return;
+      }
+    }
     const payload = {
       name: trimmed,
       type,
@@ -369,6 +505,8 @@ function MetricForm({
       cadence,
       direction,
       agg,
+      // Only yes/no habits can headline Home.
+      featured: type === "yesno" ? featured : false,
     };
     const query = metric
       ? supabase
@@ -415,6 +553,47 @@ function MetricForm({
           ))}
         </Select>
       </div>
+      {type === "yesno" && (
+        <div>
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={featured}
+            onClick={toggleFeature}
+            className="flex min-h-11 w-full items-center gap-3 rounded-xl border border-soft bg-bg px-3.5 py-3 text-left"
+          >
+            <span
+              aria-hidden
+              className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-sm font-bold ${
+                featured
+                  ? "bg-accent-deep text-white"
+                  : "border border-dim/40 bg-card text-transparent"
+              }`}
+            >
+              ✓
+            </span>
+            <span className="text-[15px] font-semibold text-ink">
+              Feature on Home
+            </span>
+            <span
+              aria-hidden
+              className={`ml-auto text-base ${
+                featured ? "text-accent" : "text-dim"
+              }`}
+            >
+              {featured ? "★" : "☆"}
+            </span>
+          </button>
+          {featureError && (
+            <p className="mt-1.5 text-xs font-semibold text-danger">
+              {featureError}
+            </p>
+          )}
+          <p className="mt-1.5 text-xs text-dim">
+            Featured habits become one-tap tiles on Home.
+          </p>
+        </div>
+      )}
       {!unitless && (
         <div>
           <Label>Unit (optional)</Label>
