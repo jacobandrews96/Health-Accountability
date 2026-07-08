@@ -4,11 +4,10 @@ import Link from "next/link";
 import { PageHeader } from "@/components/ui";
 
 const LINKS = [
-  { href: "/recap", icon: "🗓️", label: "Weekly recap", sub: "Who did what they said they would" },
   { href: "/workouts", icon: "🏋️", label: "Workouts", sub: "Every session, with the details" },
   { href: "/trends", icon: "📈", label: "Trends", sub: "Weight, hit-rate, sleep, slips" },
+  { href: "/metrics", icon: "📏", label: "Habits & Numbers", sub: "What you track — habits become tiles" },
   { href: "/baseline", icon: "📍", label: "Baseline", sub: "Where you started, honestly" },
-  { href: "/metrics", icon: "📏", label: "Metrics", sub: "What you track and how it's judged" },
 ];
 
 export default function MorePage() {

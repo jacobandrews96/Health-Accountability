@@ -100,6 +100,47 @@ export function formatValue(n: number | null): string {
   return String(Math.round(n * 10) / 10);
 }
 
+/**
+ * The one human question that replaces the direction/roll-up config jargon:
+ * "What counts as a good week?" Each answer maps to a (direction, agg) pair.
+ */
+export interface GoodWeekOption {
+  key: string;
+  /** Dropdown label, with an example. */
+  label: string;
+  /** Short plain-words summary for list rows. */
+  short: string;
+  direction: Metric["direction"];
+  agg: Metric["agg"];
+}
+
+export const GOOD_WEEK_OPTIONS: GoodWeekOption[] = [
+  { key: "total_up", label: "Hit a weekly total — like 4 gym sessions", short: "weekly total", direction: "higher", agg: "sum" },
+  { key: "avg_up", label: "Daily average, more is better — like 8,000 steps", short: "daily average", direction: "higher", agg: "avg" },
+  { key: "avg_under", label: "Stay under a daily average — like 2,200 kcal", short: "stay under (daily avg)", direction: "cap", agg: "avg" },
+  { key: "total_under", label: "Stay under a weekly total — like 2 meals ordered in", short: "stay under (weekly total)", direction: "cap", agg: "sum" },
+  { key: "latest", label: "Just track the latest — like weight", short: "latest value", direction: "lower", agg: "last" },
+];
+
+/** The option matching a metric's stored config, or null for legacy combos. */
+export function goodWeekKeyFor(m: Pick<Metric, "direction" | "agg">): string | null {
+  // Lower and cap judge identically; treat them as the same bucket here.
+  const dir = m.direction === "lower" ? "cap" : m.direction;
+  if (m.agg === "last") return "latest";
+  const hit = GOOD_WEEK_OPTIONS.find((o) => {
+    const oDir = o.direction === "lower" ? "cap" : o.direction;
+    return oDir === dir && o.agg === m.agg;
+  });
+  return hit?.key ?? null;
+}
+
+/** Plain-words summary of how a metric's week is judged. */
+export function goodWeekShort(m: Pick<Metric, "direction" | "agg">): string {
+  const key = goodWeekKeyFor(m);
+  const opt = GOOD_WEEK_OPTIONS.find((o) => o.key === key);
+  return opt?.short ?? `${m.agg}, ${m.direction}`;
+}
+
 export const STATUS_LABEL: Record<GoalStatus, string> = {
   hit: "hit",
   on_track: "on track",

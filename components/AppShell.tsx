@@ -39,21 +39,14 @@ export function useApp(): AppContextValue {
 
 const NAV = [
   { href: "/", label: "Home", icon: "🏠" },
-  { href: "/checkin", label: "Check-in", icon: "✅" },
-  { href: "/goals", label: "Goals", icon: "🎯" },
+  { href: "/checkin", label: "Log", icon: "✅" },
+  { href: "/week", label: "Week", icon: "📊" },
   { href: "/accountability", label: "Confess", icon: "🚨" },
   { href: "/more", label: "More", icon: "⋯" },
 ];
 
 /** Routes that live under the "More" tab. */
-const MORE_ROUTES = [
-  "/more",
-  "/baseline",
-  "/metrics",
-  "/workouts",
-  "/trends",
-  "/recap",
-];
+const MORE_ROUTES = ["/more", "/baseline", "/metrics", "/workouts", "/trends"];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);

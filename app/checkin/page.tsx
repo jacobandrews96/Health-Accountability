@@ -149,7 +149,11 @@ export default function CheckinPage() {
         return;
       }
 
-      const loadedMetrics = (metricsRes.data ?? []) as Metric[];
+      // Featured habits log on the Home tiles — one surface per thing.
+      // Unfeatured yes/no habits (beyond the tile cap) still get a row here.
+      const loadedMetrics = ((metricsRes.data ?? []) as Metric[]).filter(
+        (m) => !(m.type === "yesno" && m.featured),
+      );
       const logs = (logsRes.data ?? []) as DailyLog[];
       const checkin = (checkinRes.data ?? null) as Checkin | null;
 
@@ -405,10 +409,10 @@ export default function CheckinPage() {
   return (
     <>
       <PageHeader
-        title="Daily check-in"
+        title="Log"
         subtitle={
           selectedDay === today
-            ? `${formatDay(today)} — under a minute. Go.`
+            ? `${formatDay(today)} — numbers, mood, workouts. Habits live on Home.`
             : formatDay(selectedDay)
         }
       />
@@ -479,7 +483,8 @@ export default function CheckinPage() {
           <SectionTitle>Numbers</SectionTitle>
           {metrics.length === 0 ? (
             <EmptyState>
-              No daily metrics. Set them up in the Metrics tab.
+              Nothing to measure yet — add numbers under More › Habits &
+              Numbers. (Your habits log with one tap on Home.)
             </EmptyState>
           ) : (
             <Card className="py-1">

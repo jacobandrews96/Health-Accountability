@@ -7,12 +7,11 @@ import { useApp } from "@/components/AppShell";
 import Feed from "@/components/Feed";
 import Confetti from "@/components/Confetti";
 import HabitTiles from "@/components/HabitTiles";
-import { addDays, formatDay, weekStart } from "@/lib/dates";
+import { addDays, formatDay } from "@/lib/dates";
 import { useTodayNY } from "@/lib/useTodayNY";
 import { useVisibilityRefresh } from "@/lib/useVisibilityRefresh";
-import { computeProgress, formatValue } from "@/lib/goals";
 import { doneDays, featuredHabits } from "@/lib/habits";
-import type { Checkin, DailyLog, Metric, Profile, WeeklyGoal, Workout } from "@/lib/types";
+import type { Checkin, DailyLog, Metric, Profile } from "@/lib/types";
 import {
   Button,
   Card,
@@ -29,13 +28,9 @@ import {
 interface HomeData {
   /** Checkins for all members, full history (tiny table — powers streaks). */
   checkins: Checkin[];
-  /** daily_logs for all members (tiles, goals, today strip). */
+  /** daily_logs for all members (tiles + streaks). */
   logs: DailyLog[];
-  /** Today's workouts for all members. */
-  todayWorkouts: Workout[];
-  /** This week's goals for all members. */
-  goals: WeeklyGoal[];
-  /** Everyone's metric definitions (names/units/roll-up for progress). */
+  /** Everyone's metric definitions (tiles). */
   metrics: Metric[];
 }
 
@@ -76,26 +71,17 @@ export default function HomePage() {
     let cancelled = false;
 
     async function load() {
-      const week = weekStart(day);
-      const [checkinsRes, logsRes, workoutsRes, goalsRes, metricsRes] =
-        await Promise.all([
-          // No date window: streaks walk arbitrarily far back, and two
-          // people logging daily is a few KB per year.
-          supabase.from("checkins").select("*"),
-          supabase.from("daily_logs").select("*"),
-          supabase.from("workouts").select("*").eq("day", day).order("created_at"),
-          supabase.from("weekly_goals").select("*").eq("week_start", week),
-          supabase.from("metrics").select("*"),
-        ]);
+      const [checkinsRes, logsRes, metricsRes] = await Promise.all([
+        // No date window on either: streaks walk arbitrarily far back, and
+        // two people logging a handful of things is tiny data.
+        supabase.from("checkins").select("*"),
+        supabase.from("daily_logs").select("*"),
+        supabase.from("metrics").select("*"),
+      ]);
 
       if (cancelled) return;
 
-      const firstError =
-        checkinsRes.error ??
-        logsRes.error ??
-        workoutsRes.error ??
-        goalsRes.error ??
-        metricsRes.error;
+      const firstError = checkinsRes.error ?? logsRes.error ?? metricsRes.error;
       if (firstError) {
         setError(firstError.message);
         return;
@@ -104,8 +90,6 @@ export default function HomePage() {
       setData({
         checkins: (checkinsRes.data ?? []) as Checkin[],
         logs: (logsRes.data ?? []) as DailyLog[],
-        todayWorkouts: (workoutsRes.data ?? []) as Workout[],
-        goals: (goalsRes.data ?? []) as WeeklyGoal[],
         metrics: (metricsRes.data ?? []) as Metric[],
       });
     }
@@ -165,15 +149,7 @@ export default function HomePage() {
 
   return (
     <>
-      <div className="flex items-start justify-between gap-2">
-        <PageHeader title="Health Accountability" subtitle={formatDay(day)} />
-        <Link
-          href="/recap"
-          className="mt-1 shrink-0 text-[13px] font-semibold text-dim underline underline-offset-2"
-        >
-          Weekly recap ›
-        </Link>
-      </div>
+      <PageHeader title="Health Accountability" subtitle={formatDay(day)} />
 
       <ErrorBanner message={error} />
 
@@ -243,39 +219,6 @@ export default function HomePage() {
   );
 }
 
-/**
- * The member's actual numbers today, one compact line:
- * "Mood 7 · 200.5 lbs · 2200 kcal · 9500 steps". Max 4 values, then "+n more".
- */
-function todayNumbers(
-  profile: Profile,
-  day: string,
-  data: HomeData,
-  checkin: Checkin | null,
-): string[] {
-  const metricById = new Map(data.metrics.map((m) => [m.id, m]));
-  const parts: string[] = [];
-  if (checkin?.mood != null) parts.push(`Mood ${checkin.mood}`);
-  const rows = data.logs
-    .filter((l) => l.user_id === profile.id && l.day === day)
-    .flatMap((l) => {
-      const metric = metricById.get(l.metric_id);
-      // Yes/no habits read loud as tiles; a bare 1/0 isn't worth a slot here.
-      if (!metric || metric.type === "yesno") return [];
-      return [{ log: l, metric }];
-    })
-    .sort((a, b) => a.metric.sort - b.metric.sort);
-  for (const { log, metric } of rows) {
-    parts.push(
-      metric.unit
-        ? `${formatValue(Number(log.value))} ${metric.unit}`
-        : `${metric.name} ${formatValue(Number(log.value))}`,
-    );
-  }
-  if (parts.length > 4) return [...parts.slice(0, 4), `+${parts.length - 4} more`];
-  return parts;
-}
-
 function MemberCard({
   profile,
   isMe,
@@ -296,8 +239,6 @@ function MemberCard({
     data.checkins.filter((c) => c.user_id === profile.id).map((c) => c.day),
   );
   const streak = streakFrom(checkinDays, day);
-  const workouts = data.todayWorkouts.filter((w) => w.user_id === profile.id);
-  const numbers = todayNumbers(profile, day, data, checkin);
 
   return (
     <Card>
@@ -336,21 +277,15 @@ function MemberCard({
       )}
 
       {checkin ? (
-        <>
-          <p className="mt-2 text-sm font-semibold text-accent">
-            Logged today ✓
-          </p>
-          {numbers.length > 0 && (
-            <p className="mt-1 truncate text-sm text-dim">
-              {numbers.join(" · ")}
-            </p>
-          )}
-          {workouts.map((w) => (
-            <p key={w.id} className="mt-1 text-sm text-dim">
-              + workout: {w.kind}
-            </p>
-          ))}
-        </>
+        <p className="mt-2 text-sm font-semibold text-accent">
+          Logged today ✓{" "}
+          <Link
+            href={`/member?id=${profile.id}`}
+            className="font-normal text-dim underline underline-offset-2"
+          >
+            see the day ›
+          </Link>
+        </p>
       ) : (
         <>
           <p className="mt-2 text-sm text-dim">Nothing logged yet today.</p>
@@ -369,86 +304,6 @@ function MemberCard({
         </>
       )}
 
-      <WeekGoals profile={profile} isMe={isMe} day={day} data={data} />
     </Card>
-  );
-}
-
-/** This week's goal progress inside a member card. */
-function WeekGoals({
-  profile,
-  isMe,
-  day,
-  data,
-}: {
-  profile: Profile;
-  isMe: boolean;
-  day: string;
-  data: HomeData;
-}) {
-  const goals = data.goals.filter((g) => g.user_id === profile.id);
-  const metricById = new Map(data.metrics.map((m) => [m.id, m]));
-  // Logs go LOG_DAYS back for the tiles; goal progress only wants this week.
-  const weekLogs = data.logs.filter((l) => l.day >= weekStart(day));
-
-  if (goals.length === 0) {
-    return (
-      <p className="mt-3 border-t border-soft pt-3 text-[13px] text-dim">
-        {isMe ? (
-          <Link href="/goals" className="underline underline-offset-2">
-            No goals this week. Set them — takes 30 seconds.
-          </Link>
-        ) : (
-          `${profile.display_name} hasn't set goals this week.`
-        )}
-      </p>
-    );
-  }
-
-  return (
-    <div className="mt-3 border-t border-soft pt-3">
-      <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-dim">
-        This week
-      </p>
-      <div className="flex flex-col gap-2.5">
-        {goals.map((g) => {
-          const metric = metricById.get(g.metric_id);
-          if (!metric) return null;
-          const p = computeProgress(metric, g, weekLogs, false);
-          const barColor =
-            p.status === "hit"
-              ? "bg-accent-deep"
-              : p.status === "over"
-                ? "bg-danger"
-                : "bg-accent-deep/50";
-          return (
-            <div key={g.id}>
-              <div className="mb-1 flex items-baseline justify-between gap-2 text-[13px]">
-                <span className="min-w-0 truncate">{metric.name}</span>
-                <span
-                  className={`shrink-0 font-semibold ${
-                    p.status === "hit"
-                      ? "text-accent"
-                      : p.status === "over"
-                        ? "text-danger"
-                        : "text-dim"
-                  }`}
-                >
-                  {formatValue(p.value)} / {formatValue(Number(g.target))}
-                  {metric.unit ? ` ${metric.unit}` : ""}
-                  {p.status === "hit" ? " ✓" : ""}
-                </span>
-              </div>
-              <div className="h-1.5 overflow-hidden rounded-full bg-bg">
-                <div
-                  className={`h-full rounded-full transition-all ${barColor}`}
-                  style={{ width: `${Math.round(p.ratio * 100)}%` }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
   );
 }
